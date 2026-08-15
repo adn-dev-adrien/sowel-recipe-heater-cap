@@ -1,0 +1,18 @@
+{
+  "id": "heater-cap",
+  "type": "recipe",
+  "name": "Heater Cap",
+  "version": "0.1.0",
+  "description": "Caps the room temperature of an electric heater driven by a plain on/off relay: cuts the relay above an adjustable ceiling, cuts it while a window is open, and holds a frost floor when the place is empty.",
+  "icon": "Thermometer",
+  "repo": "adn-dev-adrien/sowel-recipe-heater-cap",
+  "author": "adn-dev-adrien",
+  "tags": ["automation", "heating", "temperature", "rental"],
+  "i18n": {
+    "fr": {
+      "name": "Plafond de chauffage",
+      "description": "Plafonne la température d'une pièce chauffée par un radiateur sur simple relais marche/arrêt : coupe au-dessus d'un plafond réglable, coupe sur fenêtre ouverte, et tient un hors-gel quand le logement est vide."
+    }
+  },
+  "sowelVersion": ">=1.39.0"
+}
