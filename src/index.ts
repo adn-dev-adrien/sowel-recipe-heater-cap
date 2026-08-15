@@ -1162,11 +1162,8 @@ export function createRecipe(): RecipeDefinition {
           // Leaving frost hands the heaters back: the place is about to be
           // occupied again, and a guest arriving to dead radiators is exactly
           // the call this recipe exists to avoid.
-          if (previous === "frost" || mode === "off") {
-            frostHeating = false;
-            void release(mode === "off" ? "recette en pause" : "retour en mode plafond");
-          }
-          if (mode === "frost") frostHeating = false;
+          const handBack = previous === "frost" || mode === "off";
+          if (handBack || mode === "frost") frostHeating = false;
 
           ctx.log(
             mode === "auto"
@@ -1176,7 +1173,16 @@ export function createRecipe(): RecipeDefinition {
                 : "Recette en pause",
           );
           persist();
-          void evaluate();
+
+          // Sequenced, not fired side by side: the hand-back and the first
+          // evaluation of the new mode both order relays, and running them
+          // concurrently would race over the same one.
+          void (async () => {
+            if (handBack) {
+              await release(mode === "off" ? "recette en pause" : "retour en mode plafond");
+            }
+            await evaluate();
+          })();
         },
       };
     },
