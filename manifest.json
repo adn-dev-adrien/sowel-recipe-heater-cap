@@ -2,7 +2,7 @@
   "id": "heater-cap",
   "type": "recipe",
   "name": "Heater Cap",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Caps the room temperature of an electric heater driven by a plain on/off relay: cuts the relay above an adjustable ceiling, cuts it while a window is open, and holds a frost floor when the place is empty.",
   "icon": "Thermometer",
   "repo": "adn-dev-adrien/sowel-recipe-heater-cap",

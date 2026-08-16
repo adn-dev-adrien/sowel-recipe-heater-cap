@@ -1,6 +1,6 @@
 {
   "name": "sowel-recipe-heater-cap",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Sowel recipe: temperature cap for an on/off electric heater — open-window cut-off and vacant-home frost guard",
   "type": "module",
   "main": "dist/index.js",

@@ -656,7 +656,11 @@ export function createRecipe(): RecipeDefinition {
       // ── Volatile state ────────────────────────────────────
 
       const graceUntil = new Map<string, number>();
-      const lastOrderAt = new Map<string, number>();
+      /** Per-heater view of the order in flight: what we want, whether the
+       *  relay has actually sat there during this hold, and when we last said
+       *  so. Reset whenever the intent changes, so a fresh cut never inherits
+       *  the previous target's grace. */
+      const drive = new Map<string, { target: "on" | "off"; reached: boolean; lastSentAt: number }>();
       const samples: Array<{ t: number; v: number }> = [];
       const warned = new Set<string>();
       const published = new Map<string, unknown>();
@@ -869,7 +873,10 @@ export function createRecipe(): RecipeDefinition {
             );
             return false;
           }
-          lastOrderAt.set(id, Date.now());
+          const at = Date.now();
+          const d = drive.get(id);
+          if (d && d.target === target) d.lastSentAt = at;
+          else drive.set(id, { target, reached: false, lastSentAt: at });
           commanded.set(id, target);
           return true;
         } catch (err: unknown) {
@@ -884,9 +891,16 @@ export function createRecipe(): RecipeDefinition {
       /**
        * Drive one relay towards `target`, honouring the manual-override grace.
        *
-       * Ownership is only ever recorded when the recipe itself sends the order:
-       * a relay that already sits where we want it is left unclaimed, so
-       * `release()` cannot later switch on a heater the guest had switched off.
+       * The grace hinges on `reached`, not on who sent the last order: a relay
+       * that has *sat* at the target during this hold and then leaves it was
+       * moved by a human, whether the recipe opened it or found it open. That
+       * distinction is the whole point — the guest who presses the wall switch
+       * in an already-capped room gets the same two minutes as the one who
+       * presses it after the recipe cut.
+       *
+       * Ownership (`commanded`) is a separate book, written only when the
+       * recipe itself sends the order, so `release()` can never switch on a
+       * heater the guest had switched off.
        */
       async function applyTarget(id: string, target: "on" | "off", now: number): Promise<void> {
         const eq = eqOf(id);
@@ -894,30 +908,43 @@ export function createRecipe(): RecipeDefinition {
         const state = readRelayState(eq);
         const want = target === "on";
 
+        let d = drive.get(id);
+        if (!d || d.target !== target) {
+          // New intent: act on it without waiting, and forget any grace that
+          // belonged to the previous target.
+          d = { target, reached: false, lastSentAt: 0 };
+          drive.set(id, d);
+          graceUntil.delete(id);
+        }
+
         if (state === want) {
+          d.reached = true;
           graceUntil.delete(id);
           return;
         }
 
-        // A target we have not ordered yet is a change of intent, not a relay
-        // arguing with us: send it straight away, no settle wait and no grace.
-        if (commanded.get(id) !== target) {
+        // Our own order may simply not have been reported back yet.
+        if (d.lastSentAt > 0 && now - d.lastSentAt < ORDER_SETTLE_MS) return;
+
+        if (state === null) {
+          // Blind: nothing to compare against, so send once then refresh rarely.
+          if (d.lastSentAt === 0 || now - d.lastSentAt >= BLIND_REPEAT_MS) await send(id, target);
+          return;
+        }
+
+        // Neither ordered by us nor ever settled there during this hold: the
+        // relay has simply never been where we want it, so this is the recipe
+        // doing its job rather than a human undoing it. No grace.
+        //
+        // `lastSentAt` counts as well as `reached`, or a guest flipping the
+        // switch back within the same tick as our cut would be re-cut on the
+        // spot — the very move the tolerance exists to soften.
+        if (!d.reached && d.lastSentAt === 0) {
           await send(id, target);
           return;
         }
 
-        // Past here the relay disagrees with an order we did place — but our
-        // own order may simply not have been reported back yet.
-        const sinceOrder = now - (lastOrderAt.get(id) ?? 0);
-        if (sinceOrder < ORDER_SETTLE_MS) return;
-
-        if (state === null) {
-          // Blind: nothing to compare against, so just refresh the order rarely.
-          if (sinceOrder >= BLIND_REPEAT_MS) await send(id, target);
-          return;
-        }
-
-        // Somebody moved it by hand.
+        // It had settled at the target and left it: somebody moved it by hand.
         const until = graceUntil.get(id);
         if (until === undefined) {
           graceUntil.set(id, now + graceMs);
@@ -940,6 +967,7 @@ export function createRecipe(): RecipeDefinition {
         holding = null;
         contactOpenSince = null;
         graceUntil.clear();
+        drive.clear();
         if (ids.length === 0) {
           persist();
           return;
@@ -987,6 +1015,10 @@ export function createRecipe(): RecipeDefinition {
 
         if (holding !== want) {
           holding = want;
+          // A new hold starts a new story per heater: whatever the relays did
+          // under the previous one must not buy anyone a grace delay now.
+          drive.clear();
+          graceUntil.clear();
           ctx.log(
             want === "cap"
               ? `Plafond atteint (${temp === null ? "?" : round1(temp)} °C ≥ ${maxTemp} °C) — chauffage coupé`
@@ -1164,6 +1196,8 @@ export function createRecipe(): RecipeDefinition {
           // the call this recipe exists to avoid.
           const handBack = previous === "frost" || mode === "off";
           if (handBack || mode === "frost") frostHeating = false;
+          drive.clear();
+          graceUntil.clear();
 
           ctx.log(
             mode === "auto"

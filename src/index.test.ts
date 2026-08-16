@@ -328,6 +328,51 @@ describe("temperature cap", () => {
     handle.stop();
   });
 
+  it("gives the same grace to a heater switched on by hand in an already-capped room", async () => {
+    // The relay starts off — the recipe never cut it, it just holds the cap.
+    const heater = makeHeater("heater-1", "Radiateur", false);
+    const sensor = makeSensor("sensor-1", "Sonde", 25);
+    const { ctx, orders, logs } = makeCtx([heater, sensor]);
+    const handle = createRecipe().createInstance(BASE_PARAMS, ctx as never);
+
+    await flush();
+    expect(orders).toHaveLength(0);
+
+    setRelay(heater, true); // guest presses the wall switch
+    await ticks(1);
+    expect(relayOn(heater)).toBe(true);
+    expect(logs.some((l) => l.includes("commande manuelle"))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(150_000);
+    expect(relayOn(heater)).toBe(false);
+    expect(orders).toHaveLength(1);
+
+    // Having cut it, the recipe now owns it: back under the cap it hands the
+    // guest's choice back rather than leaving them cold.
+    setTemp(sensor, 23.2);
+    await ticks(1);
+    expect(relayOn(heater)).toBe(true);
+
+    handle.stop();
+  });
+
+  it("cuts a heater already running when the room crosses the cap, with no grace", async () => {
+    const heater = makeHeater("heater-1", "Radiateur", true);
+    const sensor = makeSensor("sensor-1", "Sonde", 22);
+    const { ctx, orders } = makeCtx([heater, sensor]);
+    const handle = createRecipe().createInstance(BASE_PARAMS, ctx as never);
+
+    await flush();
+    expect(relayOn(heater)).toBe(true);
+
+    setTemp(sensor, 24.3);
+    await ticks(1);
+    expect(relayOn(heater)).toBe(false);
+    expect(orders).toHaveLength(1);
+
+    handle.stop();
+  });
+
   it("releases the cut when the sensor goes mute", async () => {
     const heater = makeHeater("heater-1", "Radiateur", true);
     const sensor = makeSensor("sensor-1", "Sonde", 25);
