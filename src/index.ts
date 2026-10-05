@@ -57,6 +57,32 @@
  * the kWh. Both are logged.
  */
 
+import {
+  DEFAULT_MODEL,
+  HEAT_SETTLE_MS,
+  MIN_STRETCH_MS,
+  coastTo,
+  learnFromCooling,
+  learnFromHeating,
+  readModel,
+  timeToReach,
+  type ThermalModel,
+} from "./thermal.js";
+import { buildOutside, localDate, parseHourly, type DaySnapshot, type Outside } from "./weather.js";
+import {
+  Occupancy,
+  atMinute,
+  hm,
+  minuteOfDay,
+  planAt,
+  type Level,
+  type OccupancyConfig,
+  type Phase,
+  type Source,
+  type Stay,
+  type Verdict,
+} from "./occupancy.js";
+
 // ============================================================
 // Types (mirrored from Sowel core — recipe packages don't import core)
 // ============================================================
@@ -184,12 +210,20 @@ interface RecipeInstanceHandle {
   onAction?(action: string, payload?: Record<string, unknown>): void;
 }
 
+interface RecipeTileDef {
+  icon?: string;
+  summaryKey?: string;
+  countdownKey?: string;
+  actions?: string[];
+}
+
 interface RecipeDefinition {
   id: string;
   name: string;
   description: string;
   slots: RecipeSlotDef[];
   actions?: RecipeActionDef[];
+  tile?: RecipeTileDef;
   i18n?: Record<string, RecipeLangPack>;
   validate(params: Record<string, unknown>, ctx: RecipeContext): void;
   createInstance(params: Record<string, unknown>, ctx: RecipeContext): RecipeInstanceHandle;
@@ -231,7 +265,8 @@ const TEMP_ALIASES = ["temperature", "temp", "local_temperature", "current_tempe
 const CONTACT_CATEGORIES = ["contact_window", "contact_door"];
 const CONTACT_ALIASES = ["contact", "opening", "window", "door"];
 
-type Mode = "auto" | "frost" | "off";
+type Mode = "auto" | "comfort" | "frost" | "off";
+type SourceParam = "cap" | Source;
 type Hold = "cap" | "window";
 
 // ============================================================
@@ -330,7 +365,56 @@ function toBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 function readMode(value: unknown): Mode {
-  return value === "frost" || value === "off" ? value : "auto";
+  return value === "frost" || value === "off" || value === "comfort" ? value : "auto";
+}
+
+export function readSource(value: unknown): SourceParam {
+  return value === "schedule" || value === "stays" || value === "daynight" ? value : "cap";
+}
+
+/** `"HH:MM"` → minutes after midnight, or null. */
+export function parseTime(value: unknown): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(value ?? "").trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const min = Number(m[2]);
+  return h < 24 && min < 60 ? h * 60 + min : null;
+}
+
+export const WORKDAY_SETS: Record<string, number[]> = {
+  "mon-fri": [1, 2, 3, 4, 5],
+  "mon-sat": [1, 2, 3, 4, 5, 6],
+  all: [0, 1, 2, 3, 4, 5, 6],
+};
+
+const MOTION_ALIASES = ["occupancy", "motion", "presence"];
+
+/** A motion sensor's live verdict: `true` while it sees somebody. */
+export function readMotion(eq: EquipmentLite | null): boolean | null {
+  if (!eq) return null;
+  const b =
+    eq.dataBindings.find((x) => x.category === "motion") ??
+    eq.dataBindings.find((x) => MOTION_ALIASES.includes(x.alias));
+  if (!b || b.value === undefined || b.value === null) return null;
+  return isOnValue(b.value);
+}
+
+/** The stays equipment published by the guestFlow plugin (or anything shaped like it). */
+export function readStay(eq: EquipmentLite | null): Stay | null {
+  if (!eq) return null;
+  const value = (alias: string): unknown => eq.dataBindings.find((b) => b.alias === alias)?.value;
+  const date = (alias: string): number | null => {
+    const v = value(alias);
+    if (typeof v !== "string" || v.trim() === "") return null;
+    const t = Date.parse(v);
+    return Number.isFinite(t) ? t : null;
+  };
+  const occupied = value("occupied");
+  return {
+    occupied: occupied === undefined || occupied === null ? false : isOnValue(occupied),
+    arrival: date("arrival"),
+    departure: date("departure"),
+  };
 }
 
 function messageOf(err: unknown): string {
@@ -381,6 +465,235 @@ function buildSlots(): RecipeSlotDef[] {
     },
 
     {
+      id: "source",
+      name: "Occupancy",
+      description: "What decides when to heat",
+      type: "select",
+      required: false,
+      defaultValue: "cap",
+      options: [
+        { value: "cap", label: "None — cap only" },
+        { value: "schedule", label: "Work schedule" },
+        { value: "stays", label: "Stays" },
+        { value: "daynight", label: "Day / night" },
+      ],
+      group: "occupancy",
+    },
+    {
+      id: "comfortTemp",
+      name: "Day / comfort",
+      description: "Target when occupied (°C)",
+      type: "number",
+      required: false,
+      defaultValue: 20,
+      constraints: { min: 10, max: 28 },
+      hiddenWhen: { slot: "source", equals: "cap" },
+      group: "occupancy",
+    },
+    {
+      id: "nightTemp",
+      name: "Night",
+      description: "Target at night (°C)",
+      type: "number",
+      required: false,
+      defaultValue: 17,
+      constraints: { min: 5, max: 26 },
+      hiddenWhen: { slot: "source", equals: ["cap", "schedule"] },
+      group: "occupancy",
+    },
+
+    {
+      id: "workdays",
+      name: "Work days",
+      description: "Days with work hours",
+      type: "select",
+      required: false,
+      defaultValue: "mon-fri",
+      options: [
+        { value: "mon-fri", label: "Monday–Friday" },
+        { value: "mon-sat", label: "Monday–Saturday" },
+        { value: "all", label: "Every day" },
+      ],
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "schedule",
+    },
+    {
+      id: "workStart",
+      name: "Work starts",
+      description: "Comfort reached at",
+      type: "time",
+      required: false,
+      defaultValue: "06:30",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "schedule",
+    },
+    {
+      id: "workEnd",
+      name: "Work ends",
+      description: "Planned end of the day",
+      type: "time",
+      required: false,
+      defaultValue: "17:00",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "schedule",
+    },
+    {
+      id: "coastFrom",
+      name: "Coast from",
+      description: "Earliest early stop",
+      type: "time",
+      required: false,
+      defaultValue: "15:00",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "schedule",
+    },
+
+    {
+      id: "stays",
+      name: "Stays",
+      description: "Equipment with occupied / arrival / departure",
+      type: "equipment",
+      required: false,
+      constraints: { crossZone: true },
+      hiddenWhen: { slot: "source", equals: ["cap", "schedule", "daynight"] },
+      group: "stays",
+    },
+
+    {
+      id: "nightStart",
+      name: "Night from",
+      description: "Night temperature from",
+      type: "time",
+      required: false,
+      defaultValue: "22:00",
+      hiddenWhen: { slot: "source", equals: ["cap", "schedule"] },
+      group: "night",
+    },
+    {
+      id: "nightEnd",
+      name: "Night until",
+      description: "Day temperature reached at",
+      type: "time",
+      required: false,
+      defaultValue: "07:00",
+      hiddenWhen: { slot: "source", equals: ["cap", "schedule"] },
+      group: "night",
+    },
+    {
+      id: "coastMax",
+      name: "Coast at most",
+      description: "Before a lower target",
+      type: "duration",
+      required: false,
+      defaultValue: "60m",
+      hiddenWhen: { slot: "source", equals: ["cap", "schedule"] },
+      group: "night",
+    },
+
+    {
+      id: "motionSensors",
+      name: "Motion sensors",
+      description: "Empty = no presence detection",
+      type: "equipment",
+      required: false,
+      list: true,
+      constraints: { equipmentType: ["sensor"], crossZone: true, includeDescendants: true },
+      hiddenWhen: { slot: "source", equals: "cap" },
+      group: "presence",
+    },
+    {
+      id: "confirmBy",
+      name: "Day off if nobody by",
+      description: "Nobody seen → day off",
+      type: "time",
+      required: false,
+      defaultValue: "08:00",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "presence",
+    },
+    {
+      id: "slowInterval",
+      name: "Check every",
+      description: "Until the fast checks",
+      type: "duration",
+      required: false,
+      defaultValue: "90m",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "presence",
+    },
+    {
+      id: "fastFrom",
+      name: "Fast checks from",
+      description: "Closer checks from",
+      type: "time",
+      required: false,
+      defaultValue: "15:00",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "presence",
+    },
+    {
+      id: "fastInterval",
+      name: "Then every",
+      description: "Fast check interval",
+      type: "duration",
+      required: false,
+      defaultValue: "30m",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "presence",
+    },
+    {
+      id: "sustainFor",
+      name: "Out of hours, after",
+      description: "Presence before heating",
+      type: "duration",
+      required: false,
+      defaultValue: "15m",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "presence",
+    },
+    {
+      id: "absentAfter",
+      name: "Stop after",
+      description: "Without motion, out of hours",
+      type: "duration",
+      required: false,
+      defaultValue: "30m",
+      hiddenWhen: { slot: "source", equals: ["cap", "stays", "daynight"] },
+      group: "presence",
+    },
+    {
+      id: "idleAfter",
+      name: "Room idle after",
+      description: "Night temperature when unused",
+      type: "duration",
+      required: false,
+      defaultValue: "2h",
+      hiddenWhen: { slot: "source", equals: ["cap", "schedule"] },
+      group: "presence",
+    },
+
+    {
+      id: "outdoorSensor",
+      name: "Outdoor sensor",
+      description: "Live outdoor temperature",
+      type: "equipment",
+      required: false,
+      constraints: { equipmentType: ["sensor", "weather"], crossZone: true },
+      hiddenWhen: { slot: "source", equals: "cap" },
+      group: "weather",
+    },
+    {
+      id: "forecast",
+      name: "Forecast",
+      description: "Weather forecast equipment",
+      type: "equipment",
+      required: false,
+      constraints: { equipmentType: ["weather_forecast"], crossZone: true },
+      hiddenWhen: { slot: "source", equals: "cap" },
+      group: "weather",
+    },
+
+    {
       id: "maxTemp",
       name: "Cap",
       description: "Cuts above (°C)",
@@ -416,7 +729,7 @@ function buildSlots(): RecipeSlotDef[] {
       description: "Heats below (°C)",
       type: "number",
       required: false,
-      defaultValue: 7,
+      defaultValue: 12,
       constraints: { min: 2, max: 15 },
       group: "frost",
     },
@@ -504,24 +817,64 @@ function buildSlots(): RecipeSlotDef[] {
 // ============================================================
 
 const FR: RecipeLangPack = {
-  name: "Plafond de chauffage",
+  name: "Chauffage intelligent",
   description:
-    "Plafonne la température d'une pièce chauffée par un radiateur sur simple relais marche/arrêt : coupe au-dessus d'un plafond réglable, coupe sur fenêtre ouverte, et tient un hors-gel quand le logement est vide.",
+    "Chauffe une pièce par des radiateurs sur relais marche/arrêt : horaires de travail, séjours ou jour/nuit, présence facultative, préchauffe apprise pour être à température à l'heure dite, météo, fenêtre ouverte et plafond. Sans source d'occupation, simple plafond de température.",
   groups: {
     main: "Équipements",
+    occupancy: "Occupation",
+    schedule: "Horaires",
+    stays: "Séjours",
+    night: "Nuit",
+    presence: "Présence",
+    weather: "Météo",
     cap: "Plafond",
-    frost: "Hors-gel",
+    frost: "Absence / hors-gel",
     window: "Fenêtre ouverte",
     advanced: "Avancé",
   },
   slots: {
     zone: { name: "Zone", description: "Pièce chauffée" },
-    heaters: { name: "Relais de chauffage", description: "Relais marche/arrêt des radiateurs" },
+    heaters: { name: "Radiateurs", description: "Relais marche/arrêt, pilotés ensemble" },
     sensor: { name: "Sonde de la pièce", description: "Mesure de température" },
+    source: {
+      name: "Occupation",
+      description: "Ce qui décide quand chauffer",
+      options: {
+        cap: "Aucune — plafond seul",
+        schedule: "Horaires de travail",
+        stays: "Séjours",
+        daynight: "Jour / nuit",
+      },
+    },
+    comfortTemp: { name: "Jour / confort", description: "Consigne quand c'est occupé (°C)" },
+    nightTemp: { name: "Nuit", description: "Consigne la nuit (°C)" },
+    workdays: {
+      name: "Jours travaillés",
+      description: "Jours avec horaires",
+      options: { "mon-fri": "Lundi–vendredi", "mon-sat": "Lundi–samedi", all: "Tous les jours" },
+    },
+    workStart: { name: "Début du travail", description: "Confort atteint à" },
+    workEnd: { name: "Fin du travail", description: "Fin prévue de la journée" },
+    coastFrom: { name: "Roue libre dès", description: "Arrêt anticipé possible à partir de" },
+    stays: { name: "Séjours", description: "Équipement occupé / arrivée / départ" },
+    nightStart: { name: "Nuit à partir de", description: "Consigne de nuit dès" },
+    nightEnd: { name: "Nuit jusqu'à", description: "Consigne de jour atteinte à" },
+    coastMax: { name: "Roue libre au plus", description: "Avant une consigne plus basse" },
+    motionSensors: { name: "Détecteurs de présence", description: "Vide = pas de détection" },
+    confirmBy: { name: "Congé si personne avant", description: "Personne vu → congé" },
+    slowInterval: { name: "Vérifier toutes les", description: "Jusqu'aux vérifications rapprochées" },
+    fastFrom: { name: "Vérif. rapprochées dès", description: "Heure de bascule" },
+    fastInterval: { name: "Puis toutes les", description: "Vérifications rapprochées" },
+    sustainFor: { name: "Hors horaires, après", description: "Présence avant de chauffer" },
+    absentAfter: { name: "Arrêt après", description: "Sans mouvement, hors horaires" },
+    idleAfter: { name: "Pièce vide après", description: "Consigne de nuit si inutilisée" },
+    outdoorSensor: { name: "Sonde extérieure", description: "Température dehors en direct" },
+    forecast: { name: "Prévisions", description: "Équipement de prévisions météo" },
     maxTemp: { name: "Plafond", description: "Coupe au-dessus (°C)" },
     hysteresis: { name: "Rétablit à", description: "Plafond moins (°C)" },
-    manualGrace: { name: "Tolérance manuelle", description: "Avant de replafonner" },
-    frostTemp: { name: "Seuil hors-gel", description: "Chauffe en dessous (°C)" },
+    manualGrace: { name: "Tolérance manuelle", description: "Avant de reprendre la main" },
+    frostTemp: { name: "Absence / hors-gel", description: "Consigne quand c'est vide (°C)" },
     frostBand: { name: "Bande hors-gel", description: "Arrête à seuil + (°C)" },
     windowSensors: { name: "Contacts d'ouverture", description: "Vide = contacts de la zone" },
     windowCutMax: { name: "Coupure max", description: "Puis rend le chauffage" },
@@ -540,9 +893,9 @@ const FR: RecipeLangPack = {
 export function createRecipe(): RecipeDefinition {
   return {
     id: "heater-cap",
-    name: "Heater Cap",
+    name: "Smart Heating",
     description:
-      "Caps the room temperature of an electric heater driven by a plain on/off relay: cuts above an adjustable ceiling, cuts while a window is open, and holds a frost floor when the place is empty.",
+      "Heats a room through on/off relays: work schedule, stays or day/night, optional presence, a learned pre-heat that reaches the target on time, weather, open-window cut-off and a ceiling. With no occupancy source, a plain temperature cap.",
 
     slots: buildSlots(),
 
@@ -553,11 +906,14 @@ export function createRecipe(): RecipeDefinition {
         stateKey: "mode",
         options: [
           { value: "auto", label: "Auto" },
-          { value: "frost", label: "Hors-gel" },
+          { value: "comfort", label: "Confort" },
+          { value: "frost", label: "Absent" },
           { value: "off", label: "Pause" },
         ],
       },
     ],
+
+    tile: { icon: "Thermometer", actions: ["set_mode"] },
 
     i18n: { fr: FR },
 
@@ -598,6 +954,61 @@ export function createRecipe(): RecipeDefinition {
           `The frost band (${frostTemp} + ${frostBand} °C) must stay below the cap (${maxTemp} - ${hysteresis} °C)`,
         );
       }
+
+      const source = readSource(params.source);
+      if (source === "cap") return;
+
+      const comfort = toNumber(params.comfortTemp) ?? 20;
+      const night = toNumber(params.nightTemp) ?? 17;
+      if (comfort > maxTemp - hysteresis) {
+        throw new Error(`The comfort target (${comfort} °C) must stay under the cap minus its margin (${maxTemp - hysteresis} °C)`);
+      }
+      if (frostTemp + frostBand >= comfort) {
+        throw new Error(`The away temperature (${frostTemp} + ${frostBand} °C) must stay below the comfort target (${comfort} °C)`);
+      }
+      if (source !== "schedule") {
+        if (night > comfort) throw new Error(`The night target (${night} °C) cannot be above the day target (${comfort} °C)`);
+        if (night <= frostTemp) throw new Error(`The night target (${night} °C) must be above the away temperature (${frostTemp} °C)`);
+        const ns = parseTime(params.nightStart ?? "22:00");
+        const ne = parseTime(params.nightEnd ?? "07:00");
+        if (ns === null || ne === null) throw new Error("Night times must be HH:MM");
+        if (ns === ne) throw new Error("The night cannot start and end at the same time");
+      }
+
+      if (source === "stays") {
+        const staysId = String(params.stays ?? "");
+        if (!staysId) {
+          throw new Error(
+            "Pick the stays equipment — without one, choose 'Day / night' and use the Absent / Auto pill",
+          );
+        }
+        if (!ctx.equipmentManager.getByIdWithDetails(staysId)) {
+          throw new Error("The selected stays equipment no longer exists");
+        }
+      }
+
+      if (source === "schedule") {
+        const t = (key: string, fallback: string): number => {
+          const v = parseTime(params[key] ?? fallback);
+          if (v === null) throw new Error(`${key} must be HH:MM`);
+          return v;
+        };
+        const start = t("workStart", "06:30");
+        const end = t("workEnd", "17:00");
+        const coast = t("coastFrom", "15:00");
+        if (start >= end) throw new Error("Work must end after it starts");
+        if (coast <= start || coast > end) throw new Error("The coasting time must fall within work hours");
+        if (normalizeIds(params.motionSensors).length > 0) {
+          const confirm = t("confirmBy", "08:00");
+          const fast = t("fastFrom", "15:00");
+          if (!(start < confirm && confirm < end)) throw new Error("The day-off check must fall within work hours");
+          if (!(confirm < fast && fast < end)) throw new Error("Fast checks must start between the day-off check and the end of work");
+          const slow = ctx.helpers.parseDuration(params.slowInterval ?? "90m");
+          const quick = ctx.helpers.parseDuration(params.fastInterval ?? "30m");
+          if (quick > slow) throw new Error("Fast checks cannot be further apart than the slow ones");
+          if (quick < 5 * 60_000) throw new Error("Checks closer than 5 minutes are not presence checks");
+        }
+      }
     },
 
     createInstance(params: Record<string, unknown>, ctx: RecipeContext): RecipeInstanceHandle {
@@ -632,6 +1043,36 @@ export function createRecipe(): RecipeDefinition {
       // are configured they are the only source, false positives included.
       const dropEnabled = toBoolean(params.dropDetection, true) && windowIds.length === 0;
 
+      // ── Smart heating params (spec 002) ───────────────────
+
+      const source = readSource(params.source);
+      const driven = source !== "cap";
+      const comfortTemp = toNumber(params.comfortTemp) ?? 20;
+      const nightTemp = toNumber(params.nightTemp) ?? 17;
+      const motionIds = normalizeIds(params.motionSensors);
+      const staysId = String(params.stays ?? "");
+      const outdoorId = String(params.outdoorSensor ?? "");
+      const forecastId = String(params.forecast ?? "");
+      const time = (value: unknown, fallback: string): number => parseTime(value ?? fallback) ?? parseTime(fallback)!;
+      const occCfg: OccupancyConfig = {
+        source: source === "cap" ? "daynight" : source,
+        hasMotion: motionIds.length > 0,
+        workdays: WORKDAY_SETS[String(params.workdays ?? "mon-fri")] ?? WORKDAY_SETS["mon-fri"],
+        workStart: time(params.workStart, "06:30"),
+        workEnd: time(params.workEnd, "17:00"),
+        confirmBy: time(params.confirmBy, "08:00"),
+        fastFrom: time(params.fastFrom, "15:00"),
+        nightStart: time(params.nightStart, "22:00"),
+        nightEnd: time(params.nightEnd, "07:00"),
+        slowIntervalMs: duration(params.slowInterval, "90m"),
+        fastIntervalMs: duration(params.fastInterval, "30m"),
+        sustainMs: duration(params.sustainFor, "15m"),
+        absentAfterMs: duration(params.absentAfter, "30m"),
+        idleAfterMs: duration(params.idleAfter, "2h"),
+      };
+      const coastFrom = time(params.coastFrom, "15:00");
+      const coastMaxMs = duration(params.coastMax, "60m");
+
       // ── Persisted state ───────────────────────────────────
 
       let mode: Mode = readMode(ctx.state.get("mode"));
@@ -652,6 +1093,23 @@ export function createRecipe(): RecipeDefinition {
             ? "window"
             : null;
       let frostHeating = ctx.state.get("frostHeating") === true;
+
+      let model: ThermalModel = readModel(ctx.state.get("model"));
+      const occupancy = new Occupancy(occCfg, ctx.state.get("occupancy"));
+      let comfortUntil = typeof ctx.state.get("comfortUntil") === "number" ? (ctx.state.get("comfortUntil") as number) : null;
+      let preheat: { until: number; target: number; startedAt: number } | null = null;
+      {
+        const p = ctx.state.get("preheat") as { until?: unknown; target?: unknown; startedAt?: unknown } | null;
+        if (p && typeof p.until === "number" && typeof p.target === "number" && typeof p.startedAt === "number") {
+          preheat = { until: p.until, target: p.target, startedAt: p.startedAt };
+        }
+      }
+      let lastPreheatStart = typeof ctx.state.get("lastPreheatStart") === "number" ? (ctx.state.get("lastPreheatStart") as number) : null;
+      let snapshots: DaySnapshot[] = Array.isArray(ctx.state.get("forecastSnapshots"))
+        ? (ctx.state.get("forecastSnapshots") as DaySnapshot[])
+        : [];
+      let heating = ctx.state.get("heating") === true;
+      let coasting = false;
 
       // ── Volatile state ────────────────────────────────────
 
@@ -698,11 +1156,20 @@ export function createRecipe(): RecipeDefinition {
         ctx.state.set(key, value);
       }
 
+      /** State writes reach the UI over the wire: only write what changed. */
+      const saved = new Map<string, string>();
+      function save(key: string, value: unknown): void {
+        const json = JSON.stringify(value ?? null);
+        if (saved.get(key) === json) return;
+        saved.set(key, json);
+        ctx.state.set(key, value);
+      }
+
       function persist(): void {
-        ctx.state.set("mode", mode);
-        ctx.state.set("commanded", Object.fromEntries(commanded));
-        ctx.state.set("holding", holding);
-        ctx.state.set("frostHeating", frostHeating);
+        save("mode", mode);
+        save("commanded", Object.fromEntries(commanded));
+        save("holding", holding);
+        save("frostHeating", frostHeating);
       }
 
       // ── Reads ─────────────────────────────────────────────
@@ -1073,6 +1540,268 @@ export function createRecipe(): RecipeDefinition {
         publish("status", frostHeating ? "frost-heating" : "frost-idle");
       }
 
+      // ── Smart heating (spec 002) ──────────────────────────
+
+      function readOutdoor(): number | null {
+        if (!outdoorId) return null;
+        const eq = eqOf(outdoorId);
+        const alias = findTemperatureAlias(eq);
+        const b = alias ? eq?.dataBindings.find((x) => x.alias === alias) : undefined;
+        return b ? toNumber(b.value) : null;
+      }
+
+      function forecastValue(alias: string): unknown {
+        if (!forecastId) return undefined;
+        return eqOf(forecastId)?.dataBindings.find((b) => b.alias === alias)?.value;
+      }
+
+      /** Decision D: the plugin publishes tomorrow onwards only, so every evening
+       *  the recipe keeps tomorrow's min/max — it will be "today" after midnight. */
+      function snapshotForecast(now: number): void {
+        if (!forecastId || new Date(now).getHours() < 20) return;
+        const min = toNumber(forecastValue("j1_temp_min"));
+        const max = toNumber(forecastValue("j1_temp_max"));
+        if (min === null || max === null) return;
+        const date = localDate(now + 24 * 3_600_000);
+        if (snapshots.some((x) => x.date === date && x.min === min && x.max === max)) return;
+        snapshots = [...snapshots.filter((x) => x.date !== date && x.date >= localDate(now)), { date, min, max }].slice(-3);
+        ctx.state.set("forecastSnapshots", snapshots);
+      }
+
+      function outside(now: number): Outside {
+        return buildOutside(now, parseHourly(forecastValue("irradiance_120h")), readOutdoor(), snapshots);
+      }
+
+      function motionNow(): boolean {
+        return motionIds.some((id) => readMotion(eqOf(id)) === true);
+      }
+
+      function stayNow(): Stay | null {
+        return staysId ? readStay(eqOf(staysId)) : null;
+      }
+
+      function levelTemp(level: Level): number {
+        return level === "comfort" ? comfortTemp : level === "night" ? nightTemp : frostTemp;
+      }
+
+      const LOOKAHEAD_MS = 14 * 3_600_000;
+      const OUTSIDE_LABEL: Record<Outside["source"], string> = {
+        forecast: "prévision horaire",
+        sensor: "sonde",
+        snapshot: "prévision de la veille",
+        blind: "estimation, aucune source",
+      };
+      const PREHEAT_MARGIN_MS = 15 * 60_000;
+      /** Irradiance (W/m²) above which the sun is trusted to do the heating. */
+      const SUN_TRUST_WM2 = 300;
+
+      /** First instant within the look-ahead where the plan asks for more than `than`. */
+      function nextRise(now: number, than: number, stay: Stay | null): { at: number; target: number } | null {
+        for (let t = now + 60_000; t <= now + LOOKAHEAD_MS; t += 5 * 60_000) {
+          const target = levelTemp(planAt(occCfg, t, stay));
+          if (target > than) {
+            // Refine to the minute.
+            let at = t;
+            while (at - 60_000 > now && levelTemp(planAt(occCfg, at - 60_000, stay)) > than) at -= 60_000;
+            return { at, target };
+          }
+        }
+        return null;
+      }
+
+      /** First instant within the look-ahead where the plan drops under `than`. */
+      function nextDrop(now: number, than: number, stay: Stay | null): number | null {
+        for (let t = now + 60_000; t <= now + LOOKAHEAD_MS; t += 60_000) {
+          if (levelTemp(planAt(occCfg, t, stay)) < than) return t;
+        }
+        return null;
+      }
+
+      // Learning stretches.
+      let stretch: { kind: "heat" | "cool"; startAt: number; startTemp: number; outdoorSum: number; n: number; sunny: boolean } | null = null;
+
+      function feedLearning(now: number, temp: number | null, out: Outside, windowOpen: boolean): void {
+        const states = heaterIds.map((id) => readRelayState(eqOf(id)));
+        const kind = states.every((x) => x === true) ? "heat" : states.every((x) => x === false) ? "cool" : null;
+        const close = (): void => {
+          if (!stretch || temp === null) return;
+          const s0 = stretch;
+          stretch = null;
+          const st = { startAt: s0.startAt, endAt: now, startTemp: s0.startTemp, endTemp: temp, outdoor: s0.outdoorSum / Math.max(1, s0.n) };
+          const learned =
+            s0.kind === "cool" ? (s0.sunny ? null : learnFromCooling(model, st)) : learnFromHeating(model, st);
+          if (!learned) return;
+          const before = model;
+          model = learned;
+          ctx.state.set("model", model);
+          // Journal only what moves the needle; the state keeps every step.
+          const first = before.gainSamples + before.tauSamples === 0;
+          if (!first && Math.abs(model.gain - before.gain) < 0.2 && Math.abs(model.tau - before.tau) < 1) return;
+          ctx.log(
+            `Apprentissage : la pièce gagne ${round1(model.gain)} °C/h tous radiateurs allumés, inertie ${round1(model.tau)} h ` +
+              `(${model.gainSamples} chauffe(s), ${model.tauSamples} refroidissement(s) observés)`,
+          );
+        };
+        if (temp === null || kind === null || windowOpen) {
+          close();
+          stretch = null;
+          return;
+        }
+        if (stretch && stretch.kind !== kind) close();
+        if (!stretch) {
+          stretch = { kind, startAt: now, startTemp: temp, outdoorSum: 0, n: 0, sunny: false };
+          return;
+        }
+        // Skip the first minutes of a heating stretch: heaters and sensor lag.
+        if (stretch.kind === "heat" && stretch.n === 0 && now - stretch.startAt < HEAT_SETTLE_MS) return;
+        if (stretch.kind === "heat" && stretch.n === 0) {
+          stretch.startAt = now;
+          stretch.startTemp = temp;
+        }
+        stretch.outdoorSum += out.outdoorAt(now);
+        stretch.n++;
+        if (out.sunAt(now) > 50) stretch.sunny = true;
+        // Close long stretches so the model keeps learning through a cold night.
+        if (now - stretch.startAt >= 3 * 3_600_000 && now - stretch.startAt >= MIN_STRETCH_MS) {
+          close();
+          stretch = { kind, startAt: now, startTemp: temp, outdoorSum: 0, n: 0, sunny: false };
+        }
+      }
+
+      function summaryFor(v: Verdict, target: number, why: string, stay: Stay | null): string {
+        if (mode === "comfort") return `Confort forcé ${comfortTemp} °C jusqu'à minuit`;
+        if (why === "window") return "Fenêtre ouverte — chauffage coupé";
+        if (why === "mute") return "Sonde muette — radiateurs rendus";
+        if (preheat) return `Préchauffe → ${preheat.target} °C à ${hm(preheat.until)}`;
+        if (why === "coast") return "Roue libre — l'inertie suffit";
+        if (why === "sun") return "Soleil prévu — radiateurs en attente";
+        const phaseText: Partial<Record<Phase, string>> = {
+          arrive: `Confort ${target} °C — arrivée attendue`,
+          present: `Confort ${target} °C — présent`,
+          dayoff: `Congé détecté — ${target} °C`,
+          left: `Parti — ${target} °C`,
+          sustained: `Présence — ${target} °C`,
+          roomIdle: `Pièce vide — ${target} °C`,
+        };
+        if (phaseText[v.phase]) return phaseText[v.phase]!;
+        if (source === "stays") {
+          if (v.level === "away") {
+            return stay?.arrival && stay.arrival > Date.now()
+              ? `Vide — arrivée ${new Date(stay.arrival).toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit" })} ${hm(stay.arrival)}`
+              : `Logement vide — ${target} °C`;
+          }
+          return v.level === "night" ? `Séjour : nuit ${target} °C` : `Séjour : jour ${target} °C`;
+        }
+        if (v.level === "night") return `Nuit ${target} °C`;
+        if (v.level === "comfort") return source === "daynight" ? `Jour ${target} °C` : `Confort ${target} °C`;
+        return `Absent — ${target} °C`;
+      }
+
+      async function driveTick(now: number, temp: number | null, windowOpen: boolean): Promise<void> {
+        snapshotForecast(now);
+        const out = outside(now);
+        const stay = stayNow();
+
+        if (mode === "comfort" && comfortUntil !== null && now >= comfortUntil) {
+          mode = "auto";
+          comfortUntil = null;
+          ctx.state.delete("comfortUntil");
+          publish("mode", mode);
+          ctx.log("Fin du confort forcé — retour en automatique");
+        }
+
+        const verdict: Verdict =
+          mode === "comfort"
+            ? { level: "comfort", phase: "plan", nextCheckAt: null, events: [] }
+            : occupancy.tick({ now, motionNow: motionNow(), stay, preheatStartedAt: lastPreheatStart });
+        for (const e of verdict.events) ctx.log(e.text, e.level);
+        save("occupancy", occupancy.snapshot());
+
+        let target = levelTemp(verdict.level);
+        const planned = levelTemp(planAt(occCfg, now, stay));
+
+        // Pre-heat: the plan is about to ask for more than the room has.
+        if (preheat && now >= preheat.until) preheat = null;
+        if (mode === "auto" && temp !== null && !preheat) {
+          const rise = nextRise(now, Math.max(planned, target), stay);
+          if (rise) {
+            const need = timeToReach(model, temp, rise.target, now, out.outdoorAt);
+            if (now + need + PREHEAT_MARGIN_MS >= rise.at) {
+              preheat = { until: rise.at, target: rise.target, startedAt: now };
+              lastPreheatStart = now;
+              ctx.state.set("lastPreheatStart", now);
+              ctx.log(
+                `Préchauffe : ${round1(temp)} °C dedans, ${round1(out.outdoorAt(now))} °C dehors (${OUTSIDE_LABEL[out.source]}) → ` +
+                  `${rise.target} °C à ${hm(rise.at)}${Number.isFinite(need) ? `, ${Math.round(need / 60_000)} min estimées` : ", au maximum"}`,
+              );
+            }
+          }
+        }
+        save("preheat", preheat);
+        if (preheat) target = Math.max(target, preheat.target);
+
+        let why = "";
+        let want: boolean;
+        if (temp === null) {
+          // Mute sensor: nothing to regulate on. Radiators get their own
+          // thermostats back — cold is the failure, not the kWh.
+          warnOnce("drive-mute", `Sonde « ${nameOf(sensorId)} » muette — radiateurs rendus à leur thermostat`);
+          want = true;
+          why = "mute";
+        } else {
+          warned.delete("drive-mute");
+          want = heating ? temp < target + 0.2 : temp < target - 0.3;
+
+          // Coasting: let the room's inertia carry it to a lower target.
+          const plannedTarget = target === planned && !preheat && mode === "auto";
+          const drop = plannedTarget ? nextDrop(now, target, stay) : null;
+          const allowed =
+            drop !== null &&
+            (source === "schedule" ? minuteOfDay(now) >= coastFrom : drop - now <= coastMaxMs);
+          if (!allowed || temp < target - 1) coasting = false;
+          else if (!coasting && temp >= target - 0.4 && coastTo(model, temp, now, drop!, out.outdoorAt) >= target - 1) {
+            coasting = true;
+            ctx.log(`Roue libre : l'inertie tient ≥ ${round1(target - 1)} °C jusqu'à ${hm(drop!)}`);
+          }
+          if (coasting) {
+            want = false;
+            why = "coast";
+          }
+
+          // Sun expected within the hour: let it do the work.
+          if (want && !preheat && temp >= target - 0.6 && out.sunAt(now + 3_600_000) >= SUN_TRUST_WM2) {
+            want = false;
+            why = "sun";
+          }
+          if (temp >= maxTemp) want = false;
+        }
+
+        const frostFloor = temp !== null && temp <= frostTemp;
+        if (windowOpen && !frostFloor) {
+          want = false;
+          why = "window";
+        }
+
+        if (want !== heating) {
+          heating = want;
+          save("heating", heating);
+        }
+        for (const id of heaterIds) await applyTarget(id, want ? "on" : "off", now);
+        persist();
+
+        feedLearning(now, temp, out, windowOpen);
+
+        publish("target", target);
+        publish("status", why || (want ? "heating" : "idle"));
+        publish("summary", summaryFor(verdict, target, why, stay));
+        const countdown = verdict.nextCheckAt ?? preheat?.until ?? null;
+        if (countdown !== null && countdown > now) publish("timerExpiresAt", new Date(countdown).toISOString());
+        else if (published.get("timerExpiresAt") !== undefined) {
+          published.delete("timerExpiresAt");
+          ctx.state.delete("timerExpiresAt");
+        }
+      }
+
       // ── Evaluation ────────────────────────────────────────
 
       async function evaluateInner(): Promise<void> {
@@ -1091,7 +1820,7 @@ export function createRecipe(): RecipeDefinition {
 
         // Only sample a room whose heating is free to answer: capping, frost
         // mode and the paused mode all cool it for reasons of their own.
-        const suspended = mode !== "auto" || holding === "cap";
+        const suspended = mode !== "auto" || holding === "cap" || (driven && !heating);
         if (!suspended) recordSample(now, temp);
         const contacts = readContacts(now);
         const drop = contacts === true ? false : evaluateDrop(now, temp, suspended);
@@ -1102,15 +1831,30 @@ export function createRecipe(): RecipeDefinition {
             await release("recette en pause");
           }
           publish("status", "paused");
+          publish("summary", "Pause — radiateurs rendus");
           return;
         }
 
         if (mode === "frost") {
           await frostTick(now, temp, windowOpen);
+          publish("summary", `Absent — hors-gel ${frostTemp} °C`);
+          return;
+        }
+
+        if (driven || mode === "comfort") {
+          await driveTick(now, temp, windowOpen);
           return;
         }
 
         await autoTick(now, temp, windowOpen);
+        publish(
+          "summary",
+          holding === "cap"
+            ? `Plafond atteint — coupé (${maxTemp} °C)`
+            : holding === "window"
+              ? "Fenêtre ouverte — chauffage coupé"
+              : `Plafond ${maxTemp} °C`,
+        );
       }
 
       async function evaluate(): Promise<void> {
@@ -1127,7 +1871,7 @@ export function createRecipe(): RecipeDefinition {
 
       // ── Wiring ────────────────────────────────────────────
 
-      const watched = new Set<string>([sensorId, ...heaterIds, ...windowIds]);
+      const watched = new Set<string>([sensorId, ...heaterIds, ...windowIds, ...motionIds, staysId].filter(Boolean));
       unsubs.push(
         ctx.eventBus.onType("equipment.data.changed", (event) => {
           const id = String(event.equipmentId ?? "");
@@ -1144,6 +1888,20 @@ export function createRecipe(): RecipeDefinition {
         : dropEnabled
           ? `chute de ${dropDelta} °C en ${ctx.helpers.formatDuration(dropWindowMs)}`
           : "aucune";
+      if (driven) {
+        const what =
+          source === "schedule"
+            ? `horaires ${hm(atMinute(Date.now(), occCfg.workStart))}–${hm(atMinute(Date.now(), occCfg.workEnd))}`
+            : source === "stays"
+              ? `séjours « ${staysId ? nameOf(staysId) : "?"} »`
+              : `jour/nuit (nuit ${hm(atMinute(Date.now(), occCfg.nightStart))}–${hm(atMinute(Date.now(), occCfg.nightEnd))})`;
+        ctx.log(
+          `Chauffage intelligent : ${what}, confort ${comfortTemp} °C` +
+            (source === "schedule" ? "" : `, nuit ${nightTemp} °C`) +
+            `, absence ${frostTemp} °C, ${motionIds.length} détecteur(s) de présence, ` +
+            `modèle ${round1(model.gain)} °C/h · ${round1(model.tau)} h`,
+        );
+      }
       ctx.log(
         `Recette démarrée — plafond ${maxTemp} °C (retour à ${round1(maxTemp - hysteresis)} °C), ` +
           `sonde « ${nameOf(sensorId)} », ${heaterIds.length} relais, ` +
@@ -1194,14 +1952,29 @@ export function createRecipe(): RecipeDefinition {
           // Leaving frost hands the heaters back: the place is about to be
           // occupied again, and a guest arriving to dead radiators is exactly
           // the call this recipe exists to avoid.
+          if (mode === "comfort") {
+            const midnight = new Date();
+            midnight.setHours(24, 0, 0, 0);
+            comfortUntil = midnight.getTime();
+            ctx.state.set("comfortUntil", comfortUntil);
+          } else {
+            comfortUntil = null;
+            ctx.state.delete("comfortUntil");
+          }
+          preheat = null;
+          coasting = false;
           const handBack = previous === "frost" || mode === "off";
           if (handBack || mode === "frost") frostHeating = false;
           drive.clear();
           graceUntil.clear();
 
           ctx.log(
-            mode === "auto"
-              ? `Mode plafond (${maxTemp} °C)`
+            mode === "comfort"
+              ? `Confort forcé ${comfortTemp} °C jusqu'à minuit`
+              : mode === "auto"
+              ? driven
+                ? "Mode automatique"
+                : `Mode plafond (${maxTemp} °C)`
               : mode === "frost"
                 ? `Mode hors-gel (${frostTemp} °C, logement vide)`
                 : "Recette en pause",
@@ -1213,7 +1986,7 @@ export function createRecipe(): RecipeDefinition {
           // concurrently would race over the same one.
           void (async () => {
             if (handBack) {
-              await release(mode === "off" ? "recette en pause" : "retour en mode plafond");
+              await release(mode === "off" ? "recette en pause" : driven ? "retour en automatique" : "retour en mode plafond");
             }
             await evaluate();
           })();

@@ -1,4 +1,45 @@
-# Sowel recipe — Heater Cap
+# Sowel recipe — Smart Heating (`heater-cap`)
+
+> Since v1.0.0 this recipe is **Smart Heating**. The id stays `heater-cap` so existing instances
+> keep running: **an instance with no occupancy source behaves exactly as v0.2.0** — the cap
+> described below. Spec: `specs/002-smart-heating/spec.md`.
+
+## Smart heating (occupancy source set)
+
+The recipe then *drives* the relays from the room sensor (hysteresis −0.3/+0.2 °C) towards a
+target picked by the occupancy source:
+
+| Source | Plan |
+| --- | --- |
+| `schedule` (an office) | comfort during work hours on work days, away otherwise |
+| `stays` (a rental) | away until arrival, day/night during the stay, away from departure — read from an equipment exposing `occupied`, `arrival`, `departure` (the guestFlow plugin publishes one per property) |
+| `daynight` | always occupied, day/night |
+
+**Presence (optional, `motionSensors`).** Office: presence assumed from work start; nobody seen by
+`confirmBy` → day off; then a check every `slowInterval`, every `fastInterval` from `fastFrom`;
+an empty interval cuts, motion restores comfort until the next empty interval. Out of hours,
+`sustainFor` of motion heats until `absentAfter` without motion. Rental/day-night: a room unused
+for `idleAfter` drops to the night target.
+
+**Pre-heat.** Whenever the plan is about to rise (work start, arrival, end of night) the recipe
+starts as late as possible to be on target on time, from a learned model of the room
+(`dT/dt = gain − (T − Tout)/tau`): `tau` from cooling stretches at night, `gain` from heating
+stretches. Outdoor temperature comes from the forecast's hourly series corrected by the live
+outdoor sensor, else the sensor, else a snapshot of tomorrow's min/max taken each evening.
+
+**Saving.** Coasting stops the heaters early when the model says the room stays within 1 °C of
+the target until it drops (`coastFrom` for a schedule, at most `coastMax` before otherwise).
+Strong sun forecast within the hour defers heating when the room is within 0.6 °C of target.
+
+**Pill.** Auto / Confort (forced until midnight) / Absent (the frost mode) / Pause. A Dashboard
+tile (`Thermometer`) shows the summary and the next presence check.
+
+**Defaults changed for new instances:** the away/frost temperature defaults to 12 °C (was 7 °C);
+existing instances keep the value stored in their parameters.
+
+---
+
+# The cap (v0.2.0 behaviour, source = none)
 
 Caps the temperature of a room heated by an electric heater behind a plain **on/off relay**.
 
