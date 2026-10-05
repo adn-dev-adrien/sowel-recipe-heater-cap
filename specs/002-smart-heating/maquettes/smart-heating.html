@@ -1,0 +1,705 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chauffage intelligent</title>
+<style>
+:root{
+  --bg:#f6f5f2; --card:#ffffff; --ink:#1d1d1f; --muted:#6b6b70; --line:#e2e0db;
+  --accent:#d9480f; --accent-soft:#fde8dc; --cold:#1c7ed6; --ok:#2b8a3e; --ok-soft:#e3f5e7;
+  --bad:#c92a2a; --bad-soft:#fdeaea; --heat:#e8590c; --pir:#7048e8; --grid:#ecebe7; --night:#5f3dc4;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#16161a; --card:#202026; --ink:#ececf0; --muted:#9a9aa3; --line:#34343c;
+    --accent:#ff8a4c; --accent-soft:#3a2418; --cold:#5aa9ff; --ok:#51cf66; --ok-soft:#1d3323;
+    --bad:#ff6b6b; --bad-soft:#3a1c1c; --heat:#ff8a4c; --pir:#a78bfa; --grid:#2a2a31; --night:#b197fc;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#16161a; --card:#202026; --ink:#ececf0; --muted:#9a9aa3; --line:#34343c;
+  --accent:#ff8a4c; --accent-soft:#3a2418; --cold:#5aa9ff; --ok:#51cf66; --ok-soft:#1d3323;
+  --bad:#ff6b6b; --bad-soft:#3a1c1c; --heat:#ff8a4c; --pir:#a78bfa; --grid:#2a2a31; --night:#b197fc;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+main{max-width:980px;margin:0 auto;padding:24px 16px 60px}
+h1{font-size:26px;margin:0 0 4px}
+h2{font-size:18px;margin:0 0 12px}
+h3{font-size:14px;margin:14px 0 8px;color:var(--muted);font-weight:600}
+.sub{color:var(--muted);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin:0 0 16px}
+ul.tight{margin:0;padding-left:20px} ul.tight li{margin:3px 0}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--card);color:var(--ink);border-radius:999px;padding:5px 11px;cursor:pointer}
+button:hover{border-color:var(--accent)}
+button.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.seg button{border-radius:8px}
+label.ctl{display:flex;flex-direction:column;gap:3px;font-size:13px;color:var(--muted);min-width:130px}
+label.ctl input,label.ctl select{font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:5px 8px;min-width:0}
+input[type=range]{width:100%;padding:0}
+.grid2{display:grid;grid-template-columns:1fr 260px;gap:16px}
+@media (max-width:760px){.grid2{grid-template-columns:1fr}}
+svg{display:block;width:100%;height:auto;user-select:none}
+.legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted);margin-top:6px}
+.legend i{display:inline-block;width:12px;height:4px;border-radius:2px;margin-right:5px;vertical-align:middle}
+.log{font-size:13px;max-height:240px;overflow:auto;border-top:1px solid var(--line);margin-top:10px;padding-top:8px}
+.log div{padding:2px 4px;display:flex;gap:8px}
+.log b{font-variant-numeric:tabular-nums;color:var(--muted);font-weight:500;min-width:42px}
+.log .cur{background:var(--accent-soft);border-radius:4px}
+.kpi{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px}
+.kpi div{font-size:13px;color:var(--muted)} .kpi strong{display:block;font-size:20px;color:var(--ink)}
+.tile{border:1px solid var(--line);border-radius:14px;padding:14px;background:var(--card);width:240px;max-width:100%}
+.tile .top{display:flex;align-items:center;gap:8px;font-weight:600}
+.tile .ico{width:30px;height:30px;border-radius:8px;display:grid;place-items:center;background:var(--accent-soft);color:var(--accent)}
+.tile .sum{color:var(--muted);font-size:13px;margin:6px 0;min-height:36px}
+.tile .cd{color:var(--accent);font-size:13px;font-variant-numeric:tabular-nums;min-height:18px}
+.tile .temp{font-size:28px;font-weight:600;margin-top:4px}
+.pill{margin-top:8px;font-size:12px;padding:3px 10px;border:0;background:var(--grid)}
+.err{color:var(--bad);font-size:12px;min-height:16px}
+input.bad,select.bad{border-color:var(--bad)!important;background:var(--bad-soft)!important}
+.dec{border-top:1px solid var(--line);padding:10px 0}
+.dec:first-child{border-top:0}
+.dec p{margin:0 0 6px;font-weight:600}
+.done{color:var(--ok);font-size:13px}
+.reco{font-size:11px;color:var(--ok);margin-left:6px}
+button.on .reco{color:#fff;opacity:.85}
+.small{font-size:12px;color:var(--muted)}
+.formgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px 14px}
+.grp{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:10px}
+.grp.off{opacity:.45}
+.grp legend{font-size:13px;font-weight:600;padding:0 4px}
+code{overflow-wrap:anywhere;font-size:13px}
+table.blocks{width:100%;border-collapse:collapse;font-size:13px}
+table.blocks td{border-top:1px solid var(--line);padding:5px 6px;vertical-align:top}
+table.blocks td:first-child{font-weight:600;white-space:nowrap}
+.ov-form{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px 12px}
+.ov-flow{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+@media (max-width:700px){.ov-flow{grid-template-columns:1fr}}
+.ov-box{border:1px solid var(--line);border-radius:10px;padding:10px 12px;min-width:0}
+.ov-h{font-size:13px;font-weight:600;margin-bottom:6px}
+.ov-box pre{margin:0;font-size:11.5px;line-height:1.4;white-space:pre-wrap;overflow-wrap:anywhere;font-family:ui-monospace,Menlo,monospace}
+.ov-box .add{background:var(--ok-soft);color:var(--ok);display:block;border-radius:4px}
+.ov-v{font-size:16px;font-weight:600;margin-bottom:4px}
+.ov-v.ok{color:var(--ok)} .ov-v.bad{color:var(--bad)} .ov-v.dim,.dim{color:var(--muted)}
+.ov-t{font-size:13px;border-collapse:collapse} .ov-t td{padding:2px 10px 2px 0} .ov-t td:first-child{font-family:ui-monospace,Menlo,monospace;color:var(--muted)}
+.new{font-size:10px;background:var(--ok-soft);color:var(--ok);border-radius:999px;padding:1px 7px;font-weight:600;vertical-align:middle}
+.ov-alarm{margin-top:10px;color:var(--bad);font-size:13px;min-height:4px}
+</style>
+</head>
+<body>
+<main>
+<h1>Chauffage intelligent</h1>
+<p class="sub">Évolution de « Plafond de chauffage » (heater-cap) · spec 002 · à valider avant de coder</p>
+
+<div class="card">
+  <h2>En bref</h2>
+  <ul class="tight">
+    <li>Une seule recette pour le bureau et les pièces du gîte : on active les briques dont on a besoin.</li>
+    <li>Sans source d'occupation, elle reste <b>exactement</b> le plafond d'aujourd'hui : les 5 pièces du gîte ne changent pas.</li>
+    <li>Préchauffe apprise (inertie + dehors + prévision de la veille) pour être à la bonne température <b>à l'heure dite</b>.</li>
+  </ul>
+  <h3>Les briques</h3>
+  <table class="blocks">
+    <tr><td>Pièce</td><td>Liste de radiateurs (tous pilotés ensemble) + sonde. Obligatoire.</td></tr>
+    <tr><td>Températures</td><td>Jour, nuit, absence (12 °C), plafond.</td></tr>
+    <tr><td>Occupation</td><td><b>Horaires</b> (bureau) · <b>Séjours</b> (gîte) · <b>Aucune</b> (jour/nuit seul).</td></tr>
+    <tr><td>PIR</td><td>Facultatif, affine n'importe quelle source.</td></tr>
+    <tr><td>Météo</td><td>Sonde extérieure + prévisions : début de préchauffe, soleil, roue libre.</td></tr>
+    <tr><td>Fenêtres</td><td>Inchangé (contacts ou chute de température).</td></tr>
+  </table>
+</div>
+
+<!-- OV:START -->
+<div class="card" id="ov">
+  <h2>Vue générale — un séjour, du logiciel au radiateur</h2>
+  <p class="small" style="margin:0 0 12px">Identique dans les 3 dépôts. Modifie le séjour ou l'heure : les 4 blocs suivent.</p>
+  <div class="ov-form">
+    <label class="ctl">Logement<select id="ovProp"><option value="1">Gîte</option><option value="2">Lodge</option></select></label>
+    <label class="ctl">Arrivée<input id="ovArr" type="datetime-local" value="2026-10-06T16:00"></label>
+    <label class="ctl">Départ<input id="ovDep" type="datetime-local" value="2026-10-09T10:00"></label>
+    <label class="ctl">Statut<select id="ovKind"><option value="reservation">Réservation</option><option value="cancelled">Annulée</option></select></label>
+    <label class="ctl">guestFlow<select id="ovUp"><option value="1">Joignable</option><option value="0">Éteint / injoignable</option></select></label>
+  </div>
+  <div class="err" id="ovErr"></div>
+  <label class="ctl" style="margin:6px 0 12px">Maintenant : <b id="ovNowL"></b>
+    <input id="ovNow" type="range" min="0" max="383" step="1" value="72">
+  </label>
+  <div class="ov-flow">
+    <div class="ov-box"><div class="ov-h">1 · guestFlow répond à <code>GET /gate/keys</code></div><pre id="ovJson"></pre></div>
+    <div class="ov-box"><div class="ov-h">2 · Clé du portail (inchangé)</div><div id="ovKey"></div></div>
+    <div class="ov-box"><div class="ov-h">3 · Équipement Sowel « Séjours <span id="ovPn"></span> » <span class="new">nouveau</span></div><div id="ovDev"></div></div>
+    <div class="ov-box"><div class="ov-h">4 · Recette « Chauffage intelligent », Chambre Nord</div><div id="ovRec"></div></div>
+  </div>
+  <div class="ov-alarm" id="ovAlarm"></div>
+</div>
+<script>
+(() => {
+  const D0 = new Date(2026, 9, 5, 0, 0); // slider origin: 05/10 00:00, 30-min steps over 8 days
+  const $ = id => document.getElementById(id);
+  const names = { 1: "Gîte", 2: "Lodge" };
+  const pad = n => String(n).padStart(2, "0");
+  const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:00+02:00`;
+  const jours = ["dim.", "lun.", "mar.", "mer.", "jeu.", "ven.", "sam."];
+  const fr = d => `${jours[d.getDay()]} ${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const H = 3600e3;
+  let snapshot = null; // what the plugin last read, used while guestFlow is down
+
+  function read() {
+    return { prop: $("ovProp").value, arr: new Date($("ovArr").value), dep: new Date($("ovDep").value), kind: $("ovKind").value };
+  }
+  function draw() {
+    const now = new Date(D0.getTime() + (+$("ovNow").value) * 30 * 60e3);
+    $("ovNowL").textContent = fr(now);
+    const up = $("ovUp").value === "1";
+    let s = read();
+    // guestFlow refuses an incoherent stay at save time: nothing reaches Sowel
+    const bad = isNaN(s.arr) || isNaN(s.dep) || s.dep <= s.arr;
+    $("ovArr").classList.toggle("bad", bad); $("ovDep").classList.toggle("bad", bad);
+    $("ovErr").textContent = bad ? "Refusé par guestFlow : le départ doit suivre l'arrivée. Sowel garde le séjour précédent." : "";
+    if (bad) s = snapshot || s;
+    if (up && !bad) snapshot = s;
+    const seen = up ? s : (snapshot || s);
+    const tooLong = seen.dep - seen.arr > 31 * 24 * H;
+    const winStart = new Date(seen.arr - 3 * H), winEnd = new Date(seen.dep.getTime() + 2 * H);
+    const inList = winEnd > now && winStart <= new Date(now.getTime() + 7 * 24 * H);
+    $("ovPn").textContent = names[seen.prop];
+
+    // 1 — JSON
+    if (!up) $("ovJson").innerHTML = `<span class="dim">— pas de réponse —\nSowel garde la dernière liste lue\n(${fr(now)} : lecture en échec)</span>`;
+    else if (!inList) $("ovJson").innerHTML = `<span class="dim">{ "keys": [] }\n// ${winEnd <= now ? "séjour terminé" : "arrivée dans plus de 7 jours"}</span>`;
+    else $("ovJson").innerHTML =
+`{
+  "reservationId": "412",
+  "action": "${seen.kind === "cancelled" ? "revoke" : "create"}",
+  "label": "${names[seen.prop]} · R-412 · Julie",
+  "startsAt": "${iso(winStart)}",
+  "endsAt": "${iso(winEnd)}",
+<span class="add">  "stay": {
+    "propertyId": ${seen.prop},
+    "propertyName": "${names[seen.prop]}",
+    "arrival": "${iso(seen.arr)}",
+    "departure": "${iso(seen.dep)}"
+  }</span>
+}`;
+
+    // 2 — gate key
+    let key;
+    if (seen.kind === "cancelled") key = ["Révoquée", "bad"];
+    else if (tooLong) key = ["Refusée : séjour de plus de 31 jours", "bad"];
+    else if (!inList && winEnd <= now) key = ["Terminée", "dim"];
+    else if (!inList) key = ["Pas encore créée (J−7)", "dim"];
+    else if (now < winStart) key = ["Créée, valable dès " + fr(winStart), "ok"];
+    else if (now < winEnd) key = ["Ouvre le portail", "ok"];
+    else key = ["Terminée", "dim"];
+    $("ovKey").innerHTML = `<div class="ov-v ${key[1]}">${key[0]}</div><div class="small">Fenêtre portail : ${fr(winStart)} → ${fr(winEnd)}<br>(arrivée − 3 h, départ + 2 h)</div>`;
+
+    // 3 — device
+    const valid = seen.kind !== "cancelled" && !tooLong && seen.dep > now;
+    const occ = valid && now >= seen.arr && now < seen.dep;
+    $("ovDev").innerHTML = valid
+      ? `<table class="ov-t"><tr><td>occupied</td><td><b>${occ ? "oui" : "non"}</b></td></tr><tr><td>arrival</td><td>${fr(seen.arr)}</td></tr><tr><td>departure</td><td>${fr(seen.dep)}</td></tr></table>`
+      : `<table class="ov-t"><tr><td>occupied</td><td><b>non</b></td></tr><tr><td>arrival</td><td>—</td></tr><tr><td>departure</td><td>—</td></tr></table><div class="small">${tooLong ? "Séjour ignoré (plus de 31 jours)." : seen.kind === "cancelled" ? "Séjour annulé : retiré." : "Aucun séjour à venir."}</div>`;
+
+    // 4 — recipe
+    const lead = 3.3 * H, hr = now.getHours(), night = hr >= 22 || hr < 7;
+    let rec;
+    if (occ) rec = night ? ["Séjour : nuit 17 °C", ""] : ["Séjour : jour 20 °C", "ok"];
+    else if (valid && seen.arr - now <= lead) rec = ["Préchauffe → 20 °C à " + fr(seen.arr).slice(-5), "ok"];
+    else if (valid && seen.arr > now) rec = ["Vide — 12 °C · préchauffe vers " + fr(new Date(seen.arr - lead)), ""];
+    else rec = ["Vide — 12 °C", "dim"];
+    $("ovRec").innerHTML = `<div class="ov-v ${rec[1]}">${rec[0]}</div><div class="small">Ne connaît pas guestFlow : lit seulement l'équipement 3.</div>`;
+
+    $("ovAlarm").innerHTML = up ? "" : `⚠ Alarme Sowel « guestFlow injoignable ». Le chauffage et le portail continuent sur la dernière liste lue${snapshot && read().kind !== snapshot.kind ? " — l'annulation ne sera vue qu'à la prochaine lecture" : ""}.`;
+  }
+  ["ovProp", "ovArr", "ovDep", "ovKind", "ovUp"].forEach(id => $(id).addEventListener("input", draw));
+  ["ovProp", "ovKind", "ovUp"].forEach(id => $(id).addEventListener("change", draw));
+  $("ovNow").addEventListener("input", draw);
+  draw();
+})();
+</script>
+
+<!-- OV:END -->
+
+<div class="card">
+  <h2>Simulateur d'une journée</h2>
+  <div class="row seg" id="sources" style="margin-bottom:10px"></div>
+  <div class="row" id="presets" style="margin-bottom:10px"></div>
+  <div class="row" style="gap:16px;margin-bottom:6px">
+    <label class="ctl">PIR
+      <select id="pirOn"><option value="1">Installé</option><option value="0">Pas de PIR</option></select>
+    </label>
+    <label class="ctl">Mini dehors : <span id="tminv"></span>
+      <input id="tmin" type="range" min="-8" max="16" step="1" value="3">
+    </label>
+    <label class="ctl">Ciel
+      <select id="sky"><option value="sun">Soleil</option><option value="grey" selected>Gris</option></select>
+    </label>
+  </div>
+  <div class="grid2">
+    <div>
+      <svg id="chart" viewBox="0 0 720 320" aria-label="Journée simulée"></svg>
+      <div class="legend">
+        <span><i style="background:var(--accent)"></i>Pièce</span>
+        <span><i style="background:var(--cold)"></i>Dehors</span>
+        <span><i style="background:var(--muted)"></i>Consigne</span>
+        <span><i style="background:var(--heat)"></i>Radiateurs</span>
+        <span id="lgPir"><i style="background:var(--pir)"></i>PIR : clic pour ajouter/retirer</span>
+      </div>
+      <label class="ctl" style="margin-top:10px">Heure de la tuile : <span id="curv"></span>
+        <input id="cur" type="range" min="0" max="1435" step="5" value="390">
+      </label>
+    </div>
+    <div>
+      <div class="tile">
+        <div class="top"><span class="ico">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M14 4v10.5a4 4 0 1 1-4 0V4a2 2 0 0 1 4 0z"/></svg>
+        </span><span id="tName">Bureau</span></div>
+        <div class="temp" id="tTemp"></div>
+        <div class="sum" id="tSum"></div>
+        <div class="cd" id="tCd"></div>
+        <button class="pill" id="tPill" title="Auto → Confort → Absent → Pause"></button>
+      </div>
+      <div class="kpi">
+        <div><strong id="kE"></strong>consommé</div>
+        <div><strong id="kRef"></strong>si confort toute la journée</div>
+      </div>
+      <div class="kpi">
+        <div><strong id="kAt"></strong><span id="kAtL">à l'heure visée</span></div>
+        <div><strong id="kPre"></strong>début préchauffe</div>
+      </div>
+    </div>
+  </div>
+  <div class="log" id="log"></div>
+  <p class="small" style="margin:8px 0 0">Valeurs physiques d'exemple : la recette apprend celles de chaque pièce.</p>
+</div>
+
+<div class="card">
+  <h2>Décisions</h2>
+  <div class="dec"><p>Déjà tranché</p>
+    <div class="done">A · absence 12 °C &nbsp;·&nbsp; B · un mouvement relance jusqu'à ce qu'il n'y en ait plus &nbsp;·&nbsp; C · tous les radiateurs ensemble &nbsp;·&nbsp; D · prévision gardée de la veille &nbsp;·&nbsp; E · roue libre, heure réglable &nbsp;·&nbsp; on fait évoluer heater-cap &nbsp;·&nbsp; F · consigne de séjour réglable par pièce (20 °C par défaut), le client peut baisser, pas monter</div>
+  </div>
+  <div id="decisions"></div>
+</div>
+
+<div class="card">
+  <h2>Réglages de la recette</h2>
+  <p class="small" style="margin:0 0 10px">Le formulaire tel qu'il sera dans Sowel, par groupes. Un groupe grisé est ignoré avec la source choisie. Une valeur refusée reste en rouge et n'est pas appliquée.</p>
+  <div id="form"></div>
+</div>
+
+<div class="card">
+  <h2>Hors périmètre · risques · suite</h2>
+  <ul class="tight">
+    <li>Pas de décalage heures creuses, pas de pompe à chaleur (c'est <code>presence-thermostat</code>).</li>
+    <li>Risque : assis sans bouger, le PIR peut rater 30 min → coupure, rattrapée au premier mouvement.</li>
+    <li>Gîte : la recette <b>pilote</b> à la consigne de séjour de la pièce ; le client peut baisser avec le bouton du radiateur, le plafond reste la sécurité.</li>
+    <li>Séjours : même canal que le portail (voir vue générale). guestFlow ajoute un bloc <code>stay</code> à sa liste de clés, le plugin guestFlow publie un équipement « Séjours » par logement. Chacun a son résumé.</li>
+    <li>À faire avant le bureau : créer l'équipement du <code>BureauPir</code>, régler les thermostats des radiateurs au-dessus de 22 °C.</li>
+  </ul>
+</div>
+</main>
+
+<script>
+(() => {
+"use strict";
+const GAIN = 3.3, TAU = 16, KW = 2.5, MARGIN = 15;
+
+const hm = m => String(Math.floor(m / 60) % 24).padStart(2, "0") + ":" + String(m % 60).padStart(2, "0");
+const parseHM = s => { const r = /^(\d{1,2}):(\d{2})$/.exec(String(s).trim()); if (!r) return null; const h = +r[1], m = +r[2]; return h < 24 && m < 60 ? h * 60 + m : null; };
+const range = (a, b, st) => { const o = []; for (let m = a; m <= b; m += st) o.push(m); return o; };
+const durLabel = I => I < 60 ? I + " min" : Math.floor(I / 60) + "h" + (I % 60 ? String(I % 60).padStart(2, "0") : "");
+const fmtDur = n => n >= 60 ? Math.floor(n / 60) + " h " + String(n % 60).padStart(2, "0") : n + " min";
+
+const DEFAULTS = {
+  schedule: { name: "Bureau", comfort: 22, night: 12, away: 12 },
+  stays: { name: "Chambre Nord", comfort: 20, night: 17, away: 12 },
+  none: { name: "Salon", comfort: 20, night: 17, away: 12 },
+  cap: { name: "Chambre Nord", comfort: 20, night: 17, away: 7 }
+};
+const S = {
+  source: "schedule", pirOn: true, day: "wd", stay: "during", tmin: 3, sky: "grey", cur: 390, mode: "auto",
+  staysEq: "gf",
+  cfg: { comfort: 22, night: 12, away: 12, cap: 24, start: 390, end: 1020, confirm: 480, fast: 900, slowI: 90, fastI: 30,
+         weSustain: 15, weAbsent: 30, nightStart: 1320, nightEnd: 420, arrival: 960, departure: 600, idleAfter: 120,
+         coastFrom: 900, coastMax: 60 },
+  dec: { F: "no" },
+  pir: []
+};
+
+const SOURCES = [
+  ["schedule", "Horaires · bureau"], ["stays", "Séjours · gîte"], ["none", "Aucune · jour/nuit"], ["cap", "Plafond seul · aujourd'hui"]
+];
+const PRESETS = {
+  schedule: {
+    "Journée normale": { day: "wd", pir: () => [...range(395, 715, 8), ...range(790, 1015, 8)] },
+    "Congé": { day: "wd", pir: () => [] },
+    "Arrive à 10h": { day: "wd", pir: () => range(600, 1010, 9) },
+    "Part à 15h40": { day: "wd", pir: () => range(395, 940, 8) },
+    "Immobile 14h–16h": { day: "wd", pir: () => [...range(395, 840, 8), ...range(965, 1015, 8)] },
+    "Samedi 40 min": { day: "we", pir: () => range(600, 640, 4) },
+    "Samedi 5 min": { day: "we", pir: () => range(600, 605, 2) }
+  },
+  stays: {
+    "Jour d'arrivée": { stay: "arrival", pir: () => [...range(975, 1300, 10), ...range(430, 440, 5).map(m => m + 0)].filter(m => m >= 960) },
+    "Pendant le séjour": { stay: "during", pir: () => [...range(450, 600, 10), ...range(1080, 1310, 10)] },
+    "Jour de départ": { stay: "departure", pir: () => range(450, 590, 10) },
+    "Logement vide": { stay: "vacant", pir: () => [] }
+  },
+  none: {
+    "Matin et soir": { pir: () => [...range(450, 540, 10), ...range(1080, 1300, 10)] },
+    "Toute la journée": { pir: () => range(450, 1300, 12) }
+  },
+  cap: { "Client à fond": { pir: () => [] } }
+};
+
+function outside(m) {
+  const tmax = S.tmin + (S.sky === "sun" ? 9 : 4), h = (m % 1440) / 60;
+  let f;
+  if (h >= 6 && h <= 15) f = (1 - Math.cos(Math.PI * (h - 6) / 9)) / 2;
+  else { const d = h > 15 ? h - 15 : h + 9; f = (1 + Math.cos(Math.PI * d / 15)) / 2; }
+  return S.tmin + (tmax - S.tmin) * f;
+}
+function sun(m) { const h = (m % 1440) / 60; if (h < 8 || h > 17) return 0; return (S.sky === "sun" ? 0.9 : 0.15) * Math.sin(Math.PI * (h - 8) / 9); }
+function step(T, m, on) { return T + ((on ? GAIN : 0) - (T - outside(m)) / TAU + sun(m)) / 60; }
+function timeToReach(T, m, target) { for (let k = 0; k < 720; k++) { if (T >= target) return k; T = step(T, m + k, true); } return Infinity; }
+function coastOk(T, m, until, floor) { for (let k = m; k < until; k++) T = step(T, k, false); return T >= floor; }
+
+function inNight(m) { const c = S.cfg; m %= 1440; return c.nightStart > c.nightEnd ? (m >= c.nightStart || m < c.nightEnd) : (m >= c.nightStart && m < c.nightEnd); }
+// Planned target, before presence and optimisations.
+function plan(m) {
+  const c = S.cfg;
+  if (m >= 1440) return plan(1439);
+  switch (S.source) {
+    case "schedule": return S.day === "wd" && m >= c.start && m < c.end ? c.comfort : c.away;
+    case "stays": {
+      const occ = S.stay === "during" || (S.stay === "arrival" && m >= c.arrival) || (S.stay === "departure" && m < c.departure);
+      if (!occ) return c.away;
+      if (S.dec.F === "yes" && !inNight(m)) return c.cap;
+      return inNight(m) ? c.night : c.comfort;
+    }
+    case "none": return inNight(m) ? c.night : c.comfort;
+    default: return c.cap;
+  }
+}
+
+function simulate(flat) {
+  const c = S.cfg, pirSet = new Set(S.pirOn ? S.pir : []), wd = S.day === "wd";
+  let T = Math.max(plan(0), outside(0) + 6), on = false;
+  let phase = "base", lastPir = -1e9, chainStart = null, preStart = null, preUntil = null, preTarget = null;
+  let dayOver = false, coasting = false, compStart = null, idle = false, prevPlan = null;
+  const out = [], log = [];
+  const say = (m, s, kind) => log.push({ m, s, kind: kind || "info" });
+  const office = S.source === "schedule" && S.pirOn;
+  if (office) phase = wd ? "night" : "idle";
+
+  for (let m = 0; m < 1440; m++) {
+    const det = pirSet.has(m);
+    if (det) { if (m - lastPir > 5) chainStart = m; lastPir = m; }
+    const p = plan(m);
+    if (p !== prevPlan) { if (p === c.comfort || p === c.cap) compStart = m; prevPlan = p; }
+    let target = p, label = "", check = null;
+
+    if (flat) target = c.comfort;
+    else if (S.mode === "comfort") { target = c.comfort; label = "forced"; }
+    else if (S.mode === "away") { target = c.away; label = "forcedAway"; }
+    else if (S.mode === "off") { target = -99; label = "off"; }
+    else if (S.source === "cap") { target = c.cap; label = "cap"; }
+    else if (office) {
+      if (wd && !dayOver) {
+        if (phase === "night" && m >= c.start) phase = "arrive";
+        if ((phase === "night" || phase === "arrive") && m === c.confirm) {
+          const seen = S.pir.some(q => q >= (preStart ?? c.start) && q <= m);
+          check = { ok: seen };
+          if (seen) { phase = "present"; say(m, "Présence vue ce matin → journée de travail", "ok"); }
+          else { phase = "dayoff"; say(m, `Personne avant ${hm(c.confirm)} → congé, ${c.away} °C`, "bad"); }
+        }
+        if (m > c.confirm && phase === "present") {
+          const I = m >= c.fast ? c.fastI : c.slowI;
+          const isCheck = m < c.fast ? (m - c.confirm) % c.slowI === 0 : (m - c.fast) % c.fastI === 0;
+          if (isCheck) {
+            const ok = lastPir > m - I; check = { ok };
+            if (ok) say(m, `Vérif. ${durLabel(I)} : présent`, "ok");
+            else { phase = "left"; say(m, `Aucun mouvement depuis ${durLabel(I)} → ${c.away} °C`, "bad"); }
+          }
+        }
+        if ((phase === "dayoff" || phase === "left") && det) { phase = "present"; say(m, "Mouvement → confort jusqu'à ce qu'il n'y en ait plus"); }
+        if (phase === "left" && m >= c.end) { dayOver = true; phase = "idle"; chainStart = null; say(m, "Journée finie → règle du soir"); }
+      }
+      if (phase === "idle" && chainStart !== null && m - lastPir <= 5 && m - chainStart >= c.weSustain) { phase = "we"; say(m, `Présence depuis ${c.weSustain} min → chauffe`); }
+      else if (phase === "we" && m - lastPir >= c.weAbsent) { phase = "idle"; chainStart = null; say(m, `${c.weAbsent} min sans mouvement → ${c.away} °C`, "bad"); }
+      target = ["arrive", "present", "we"].includes(phase) ? c.comfort : c.away;
+      if (phase === "night") target = c.away;
+      label = phase;
+    } else if (S.pirOn && p === c.comfort && compStart !== null) {
+      const since = Math.max(lastPir, compStart);
+      if (!idle && m - since >= c.idleAfter) { idle = true; say(m, `Pièce sans mouvement depuis ${durLabel(c.idleAfter)} → ${c.night} °C`, "bad"); }
+      if (idle && det) { idle = false; say(m, "Mouvement → confort"); }
+      if (idle) { target = c.night; label = "idle"; }
+    } else idle = false;
+
+    // pre-heat: the planned target is about to rise
+    if (!flat && S.mode === "auto" && S.source !== "cap") {
+      if (preUntil !== null && m >= preUntil) { preUntil = null; }
+      if (preUntil === null && !(office && phase !== "night")) {
+        let t = null; for (let k = m + 1; k < 1440 && k <= m + 720; k++) if (plan(k) > p) { t = k; break; }
+        if (t !== null) {
+          const need = timeToReach(T, m, plan(t));
+          if (m + need + MARGIN >= t) {
+            preUntil = t; preTarget = plan(t); if (preStart === null || m > preStart + 60) preStart = m;
+            say(m, `Préchauffe : ${outside(m).toFixed(1)} °C dehors, ${T.toFixed(1)} °C dedans → ${preTarget} °C à ${hm(t)}`);
+          }
+        }
+      }
+      if (preUntil !== null) { target = Math.max(target, preTarget); if (!label || label === "night" || label === "base") label = "pre"; }
+    }
+
+    let want = target > -50 && (on ? T < target + 0.2 : T < target - 0.3);
+    let why = "";
+    if (!flat && S.mode === "auto" && S.source !== "cap") {
+      if (want && sun(m + 60) > 0.45 && T >= target - 0.6 && label !== "pre") { want = false; why = "sun"; }
+      // coasting before the next drop
+      let drop = null; for (let k = m + 1; k < 1440 && k <= m + 600; k++) if (plan(k) < target) { drop = k; break; }
+      const allowed = drop !== null && target === plan(m) && (S.source === "schedule" ? m >= c.coastFrom : drop - m <= c.coastMax);
+      if (!allowed || T < target - 1) coasting = false;
+      else if (!coasting && T >= target - 0.4 && coastOk(T, m, drop, target - 1)) { coasting = true; say(m, `Roue libre : l'inertie tient ≥ ${target - 1} °C jusqu'à ${hm(drop)}`); }
+      if (coasting) { want = false; why = "coast"; }
+    }
+    if (S.source === "cap" && !flat && S.mode === "auto") want = on ? T < c.cap : T < c.cap - 0.5; // guest knob flat out, the cap vetoes
+    on = want;
+    T = step(T, m, on);
+    out.push({ m, T, ext: outside(m), target: Math.max(target, 0), on, label, check, why });
+  }
+  return { out, log, preStart };
+}
+
+// ---------- render ----------
+const svg = document.getElementById("chart");
+const X0 = 34, X1 = 712, YT = 10, YB = 220, LANE = { heat: 236, pir: 262, chk: 290 };
+const x = m => X0 + (X1 - X0) * m / 1440;
+const yT = t => YB - (YB - YT) * (Math.max(-10, Math.min(26, t)) + 10) / 36;
+
+function render() {
+  const sim = simulate(false), ref = simulate(true), o = sim.out, c = S.cfg;
+  let s = "";
+  for (let h = 0; h < 24; h++) if (inNight(h * 60) && ["stays", "none"].includes(S.source)) s += `<rect x="${x(h * 60)}" y="${YT}" width="${x(60) - x(0) + 0.5}" height="${YB - YT}" fill="var(--night)" opacity=".06"/>`;
+  if (S.source === "schedule" && S.day === "wd") s += `<rect x="${x(c.start)}" y="${YT}" width="${x(c.end) - x(c.start)}" height="${YB - YT}" fill="var(--accent-soft)" opacity=".5"/>`;
+  for (let t = -10; t <= 25; t += 5) s += `<line x1="${X0}" x2="${X1}" y1="${yT(t)}" y2="${yT(t)}" stroke="var(--grid)"/><text x="${X0 - 4}" y="${yT(t) + 4}" font-size="10" text-anchor="end" fill="var(--muted)">${t}</text>`;
+  for (let h = 0; h <= 24; h += 3) s += `<line x1="${x(h * 60)}" x2="${x(h * 60)}" y1="${YT}" y2="${LANE.chk + 8}" stroke="var(--grid)"/><text x="${x(h * 60)}" y="316" font-size="10" text-anchor="middle" fill="var(--muted)">${h}h</text>`;
+  const path = f => o.map((p, i) => (i ? "L" : "M") + x(p.m).toFixed(1) + " " + yT(f(p)).toFixed(1)).join("");
+  s += `<path d="${path(p => p.ext)}" fill="none" stroke="var(--cold)" stroke-width="1.5" stroke-dasharray="4 3"/>`;
+  if (S.mode !== "off") s += `<path d="${path(p => p.target)}" fill="none" stroke="var(--muted)" stroke-width="1"/>`;
+  s += `<path d="${path(p => p.T)}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>`;
+  let st = null; o.forEach((p, i) => { if (p.on && st === null) st = p.m; if ((!p.on || i === o.length - 1) && st !== null) { s += `<rect x="${x(st)}" y="${LANE.heat}" width="${Math.max(1.5, x(p.m) - x(st))}" height="10" rx="2" fill="var(--heat)"/>`; st = null; } });
+  s += `<text x="${X0 - 4}" y="${LANE.heat + 9}" font-size="9" text-anchor="end" fill="var(--muted)">rad.</text>`;
+  if (S.pirOn) {
+    s += `<rect x="${X0}" y="${LANE.pir - 8}" width="${X1 - X0}" height="20" fill="var(--pir)" opacity=".07" rx="4" style="cursor:copy"/>`;
+    s += `<text x="${X0 - 4}" y="${LANE.pir + 6}" font-size="9" text-anchor="end" fill="var(--muted)">PIR</text>`;
+    S.pir.forEach(m => s += `<line x1="${x(m)}" x2="${x(m)}" y1="${LANE.pir - 6}" y2="${LANE.pir + 10}" stroke="var(--pir)" stroke-width="2" pointer-events="none"/>`);
+    s += `<text x="${X0 - 4}" y="${LANE.chk + 4}" font-size="9" text-anchor="end" fill="var(--muted)">vérif.</text>`;
+    o.forEach(p => { if (p.check) s += `<circle cx="${x(p.m)}" cy="${LANE.chk}" r="5" fill="${p.check.ok ? "var(--ok)" : "var(--bad)"}"/>`; });
+  } else s += `<text x="${(X0 + X1) / 2}" y="${LANE.pir + 10}" font-size="11" text-anchor="middle" fill="var(--muted)">pas de PIR : la consigne suit le planning</text>`;
+  s += `<line x1="${x(S.cur)}" x2="${x(S.cur)}" y1="${YT}" y2="${LANE.chk + 8}" stroke="var(--ink)" stroke-dasharray="2 2"/>`;
+  svg.innerHTML = s;
+
+  const p = o[S.cur];
+  document.getElementById("tName").textContent = DEFAULTS[S.source].name;
+  document.getElementById("tTemp").textContent = p.T.toFixed(1) + " °C";
+  document.getElementById("tSum").textContent = summary(p, sim);
+  const nc = S.pirOn ? o.slice(S.cur + 1).find(q => q.check) : null;
+  const nextChange = o.slice(S.cur + 1).find(q => q.target !== p.target);
+  document.getElementById("tCd").textContent = nc && ["arrive", "present"].includes(p.label) ? "Prochaine vérif. dans " + fmtDur(nc.m - S.cur)
+    : nextChange && S.mode === "auto" && S.source !== "cap" ? `${nextChange.target} °C dans ${fmtDur(nextChange.m - S.cur)}` : "";
+  document.getElementById("tPill").textContent = { auto: "Auto", comfort: "Confort", away: "Absent", off: "Pause" }[S.mode];
+
+  const kwh = r => r.out.reduce((a, q) => a + (q.on ? KW : 0), 0) / 60;
+  document.getElementById("kE").textContent = kwh(sim).toFixed(1) + " kWh";
+  document.getElementById("kRef").textContent = kwh(ref).toFixed(1) + " kWh";
+  const aim = S.source === "schedule" ? (S.day === "wd" ? c.start : null) : S.source === "stays" ? (S.stay === "arrival" ? c.arrival : S.stay === "vacant" ? null : c.nightEnd) : S.source === "none" ? c.nightEnd : null;
+  document.getElementById("kAt").textContent = aim !== null ? o[aim].T.toFixed(1) + " °C" : "—";
+  document.getElementById("kAtL").textContent = aim !== null ? "à " + hm(aim) : "à l'heure visée";
+  document.getElementById("kPre").textContent = sim.preStart != null ? hm(sim.preStart) : "—";
+  document.getElementById("tminv").textContent = S.tmin + " °C";
+  document.getElementById("curv").textContent = hm(S.cur);
+  document.getElementById("lgPir").style.display = S.pirOn ? "" : "none";
+  const lg = document.getElementById("log");
+  lg.innerHTML = sim.log.length ? sim.log.map(e => `<div class="${Math.abs(e.m - S.cur) < 5 ? "cur" : ""}"><b>${hm(e.m)}</b><span style="color:${e.kind === "bad" ? "var(--bad)" : e.kind === "ok" ? "var(--ok)" : "var(--ink)"}">${e.s}</span></div>`).join("")
+    : `<div class="small">${S.source === "cap" ? "Le client règle le radiateur, la recette coupe à " + c.cap + " °C (comportement actuel)." : "Rien à décider : la consigne suit le planning."}</div>`;
+}
+function summary(p, sim) {
+  const c = S.cfg;
+  switch (p.label) {
+    case "forced": return `Confort forcé ${c.comfort} °C jusqu'à minuit`;
+    case "forcedAway": return `Absent — ${c.away} °C`;
+    case "off": return "Pause — radiateurs rendus";
+    case "cap": return `Plafond ${c.cap} °C`;
+    case "pre": { const t = sim.out.slice(p.m).find(q => q.label !== "pre"); return `Préchauffe → ${p.target} °C à ${t ? hm(t.m) : "—"}`; }
+    case "night": return sim.preStart != null ? `Préchauffe prévue à ${hm(sim.preStart)} — ${c.away} °C` : `Nuit — ${c.away} °C`;
+    case "arrive": return `Confort ${c.comfort} °C — présence attendue avant ${hm(c.confirm)}`;
+    case "present": return p.why === "coast" ? "Roue libre jusqu'à la fin" : `Confort ${c.comfort} °C — présent`;
+    case "dayoff": return `Congé détecté — ${c.away} °C`;
+    case "left": return `Parti — ${c.away} °C`;
+    case "we": return `Présence — confort ${c.comfort} °C`;
+    case "idle": return S.source === "schedule" ? `Absent — ${c.away} °C` : `Pièce vide — ${c.night} °C`;
+  }
+  if (p.why === "coast") return "Roue libre avant la baisse";
+  if (p.why === "sun") return "Le soleil chauffe, radiateurs en attente";
+  if (S.source === "stays") return p.target === c.away ? (S.stay === "vacant" ? `Logement vide — ${c.away} °C` : S.stay === "arrival" ? `Vide — arrivée à ${hm(c.arrival)}` : `Départ fait — ${c.away} °C`) : inNight(p.m) ? `Séjour : nuit ${c.night} °C` : `Séjour : jour ${p.target} °C`;
+  if (S.source === "none") return inNight(p.m) ? `Nuit ${c.night} °C` : `Jour ${c.comfort} °C`;
+  return p.target === c.comfort ? `Confort ${c.comfort} °C` : `Absent — ${c.away} °C`;
+}
+
+// ---------- controls ----------
+const srcEl = document.getElementById("sources"), presEl = document.getElementById("presets");
+SOURCES.forEach(([k, l]) => { const b = document.createElement("button"); b.textContent = l; b.dataset.k = k; b.onclick = () => setSource(k); srcEl.appendChild(b); });
+function setSource(k) {
+  S.source = k; const d = DEFAULTS[k]; S.cfg.comfort = d.comfort; S.cfg.night = d.night; S.cfg.away = d.away; S.mode = "auto";
+  if (k === "cap") S.pirOn = false; else if (k === "schedule") S.pirOn = true;
+  document.getElementById("pirOn").value = S.pirOn ? "1" : "0";
+  [...srcEl.children].forEach(b => b.classList.toggle("on", b.dataset.k === k));
+  presEl.innerHTML = "";
+  Object.entries(PRESETS[k]).forEach(([name, pr]) => {
+    const b = document.createElement("button"); b.textContent = name;
+    b.onclick = () => { S.pir = pr.pir(); if (pr.day) S.day = pr.day; if (pr.stay) S.stay = pr.stay; [...presEl.children].forEach(c => c.classList.toggle("on", c === b)); render(); };
+    presEl.appendChild(b);
+  });
+  buildForm(); presEl.children[0].click();
+}
+document.getElementById("pirOn").onchange = e => { S.pirOn = e.target.value === "1"; buildForm(); render(); };
+document.getElementById("tmin").oninput = e => { S.tmin = +e.target.value; render(); };
+document.getElementById("sky").onchange = e => { S.sky = e.target.value; render(); };
+document.getElementById("cur").oninput = e => { S.cur = +e.target.value; render(); };
+document.getElementById("tPill").onclick = () => { S.mode = { auto: "comfort", comfort: "away", away: "off", off: "auto" }[S.mode]; render(); };
+svg.addEventListener("click", ev => {
+  const pt = svg.createSVGPoint(); pt.x = ev.clientX; pt.y = ev.clientY;
+  const q = pt.matrixTransform(svg.getScreenCTM().inverse());
+  const m = Math.round((q.x - X0) / (X1 - X0) * 1440 / 5) * 5;
+  if (m < 0 || m >= 1440) return;
+  if (!S.pirOn || q.y < LANE.pir - 12 || q.y > LANE.pir + 16) { S.cur = Math.min(1435, m); document.getElementById("cur").value = S.cur; render(); return; }
+  const near = S.pir.filter(p => Math.abs(p - m) <= 5);
+  S.pir = near.length ? S.pir.filter(p => !near.includes(p)) : [...S.pir, m].sort((a, b) => a - b);
+  [...presEl.children].forEach(c => c.classList.remove("on"));
+  render();
+});
+
+// ---------- open decision ----------
+const DEC = [];
+const decEl = document.getElementById("decisions");
+DEC.forEach(dq => {
+  const w = document.createElement("div"); w.className = "dec";
+  w.innerHTML = `<p>${dq.q}</p><div class="row seg"></div><div class="small" style="margin-top:4px">${dq.hint}</div>`;
+  const r = w.querySelector(".row");
+  dq.opts.forEach(([v, l, reco]) => {
+    const b = document.createElement("button"); b.innerHTML = l + (reco ? '<span class="reco">recommandé</span>' : "");
+    b.classList.toggle("on", S.dec[dq.k] === v);
+    b.onclick = () => { S.dec[dq.k] = v; [...r.children].forEach(c => c.classList.toggle("on", c === b)); render(); };
+    r.appendChild(b);
+  });
+  decEl.appendChild(w);
+});
+
+// ---------- settings form ----------
+const GROUPS = [
+  { g: "Pièce", on: () => true, f: [
+    { id: "heaters", label: "Radiateurs", type: "static", get: () => S.source === "schedule" ? "Chauffage, Chauffe Appoint" : "Radiateur Ch. Nord" },
+    { id: "sensor", label: "Sonde", type: "static", get: () => S.source === "schedule" ? "Température (Bureau)" : "Température (Ch. Nord)" },
+    { id: "source", label: "Source d'occupation", type: "select", options: [["none", "Aucune"], ["schedule", "Horaires"], ["stays", "Séjours"], ["cap", "Aucune, plafond seul"]], get: () => S.source }
+  ]},
+  { g: "Températures", on: () => true, f: [
+    { id: "comfort", label: "Jour / séjour (°C)", type: "num" },
+    { id: "night", label: "Nuit (°C)", type: "num" },
+    { id: "away", label: "Absence (°C)", type: "num" },
+    { id: "cap", label: "Plafond (°C)", type: "num" }
+  ]},
+  { g: "Horaires", on: () => S.source === "schedule", f: [
+    { id: "start", label: "Début du travail", type: "hm" }, { id: "end", label: "Fin du travail", type: "hm" },
+    { id: "coastFrom", label: "Roue libre possible dès", type: "hm" }
+  ]},
+  { g: "Séjours", on: () => S.source === "stays", f: [
+    { id: "staysEq", label: "Équipement Séjours", type: "select", options: [["", "— aucun —"], ["gf", "Séjours Gîte (guestFlow)"]], get: () => S.staysEq },
+    { id: "arrival", label: "Arrivée (simulateur)", type: "hm" }, { id: "departure", label: "Départ (simulateur)", type: "hm" }
+  ]},
+  { g: "Nuit", on: () => ["stays", "none"].includes(S.source), f: [
+    { id: "nightStart", label: "Début de nuit", type: "hm" }, { id: "nightEnd", label: "Fin de nuit", type: "hm" },
+    { id: "coastMax", label: "Roue libre au plus (min avant)", type: "num" }
+  ]},
+  { g: "Présence (PIR)", on: () => S.pirOn && S.source !== "cap", f: [
+    { id: "confirm", label: "Congé si personne avant", type: "hm", only: "schedule" },
+    { id: "fast", label: "Vérif. rapprochées dès", type: "hm", only: "schedule" },
+    { id: "slowI", label: "Intervalle avant (min)", type: "num", only: "schedule" },
+    { id: "fastI", label: "Intervalle après (min)", type: "num", only: "schedule" },
+    { id: "weSustain", label: "Hors horaires : présence (min)", type: "num", only: "schedule" },
+    { id: "weAbsent", label: "Coupure après (min)", type: "num", only: "schedule" },
+    { id: "idleAfter", label: "Pièce vide après (min)", type: "num", not: "schedule" }
+  ]},
+  { g: "Météo", on: () => S.source !== "cap", f: [
+    { id: "outdoor", label: "Sonde extérieure", type: "static", get: () => "Température (Extérieur)" },
+    { id: "forecast", label: "Prévisions", type: "static", get: () => "Prévisions météo" }
+  ]},
+  { g: "Fenêtres (inchangé)", on: () => true, f: [
+    { id: "win", label: "Contacts", type: "static", get: () => "— (chute de température)" }
+  ]}
+];
+function validate(c, src, staysEq) {
+  if (!(c.away >= 5)) return ["away", "Au moins 5 °C (hors-gel)"];
+  if (!(c.away <= c.comfort - 2)) return ["away", `Au moins 2 °C sous le confort (${c.comfort} °C)`];
+  if (["stays", "none"].includes(src) && !(c.night > c.away)) return ["night", `Au-dessus de l'absence (${c.away} °C)`];
+  if (!(c.comfort >= (["stays", "none"].includes(src) ? c.night : c.away + 2))) return ["comfort", "Au moins la température de nuit / d'absence + 2 °C"];
+  if (!(c.cap >= c.comfort + 0.5)) return ["cap", `Au moins 0,5 °C au-dessus du confort (${c.comfort} °C)`];
+  if (src === "schedule") {
+    if (!(c.start < c.end)) return ["end", "Après le début du travail"];
+    if (!(c.coastFrom > c.start && c.coastFrom < c.end)) return ["coastFrom", "Entre le début et la fin du travail"];
+    if (S.pirOn) {
+      if (!(c.start < c.confirm && c.confirm < c.end)) return ["confirm", "Pendant les horaires de travail"];
+      if (!(c.confirm < c.fast && c.fast < c.end)) return ["fast", "Entre l'heure de congé et la fin"];
+      if (!(c.slowI >= 15 && c.slowI <= 240)) return ["slowI", "Entre 15 et 240 min"];
+      if (!(c.fastI >= 10 && c.fastI <= c.slowI)) return ["fastI", "Entre 10 min et l'intervalle d'avant"];
+    }
+  }
+  if (src === "stays" && !staysEq) return ["staysEq", "Choisir l'équipement Séjours — sans guestFlow, mettre la source à « Aucune » et utiliser la pastille Absent/Auto"];
+  if (["stays", "none"].includes(src) && c.nightStart === c.nightEnd) return ["nightEnd", "Différente du début de nuit"];
+  if (!(c.coastMax >= 0 && c.coastMax <= 240)) return ["coastMax", "Entre 0 et 240 min"];
+  return null;
+}
+const formEl = document.getElementById("form");
+function buildForm() {
+  formEl.innerHTML = "";
+  GROUPS.forEach(G => {
+    const fs = document.createElement("fieldset"); fs.className = "grp" + (G.on() ? "" : " off");
+    fs.innerHTML = `<legend>${G.g}</legend><div class="formgrid"></div>`;
+    const grid = fs.querySelector(".formgrid");
+    G.f.forEach(f => {
+      if (f.only && f.only !== S.source) return; if (f.not && f.not === S.source) return;
+      const l = document.createElement("label"); l.className = "ctl";
+      const val = f.get ? f.get() : f.type === "hm" ? hm(S.cfg[f.id]) : S.cfg[f.id];
+      if (f.type === "static") l.innerHTML = `${f.label}<input value="${val}" disabled><span class="err"></span>`;
+      else if (f.type === "select") l.innerHTML = `${f.label}<select id="f_${f.id}">${f.options.map(([v, t]) => `<option value="${v}"${v === val ? " selected" : ""}>${t}</option>`).join("")}</select><span class="err"></span>`;
+      else l.innerHTML = `${f.label}<input id="f_${f.id}" value="${val}" inputmode="${f.type === "num" ? "decimal" : "text"}"><span class="err"></span>`;
+      grid.appendChild(l);
+    });
+    formEl.appendChild(fs);
+  });
+}
+formEl.addEventListener("change", e => { if (e.target.id === "f_source" && validateForm()) setSource(e.target.value); });
+formEl.addEventListener("input", e => { if (e.target.id !== "f_source") validateForm(); });
+function validateForm() {
+  const draft = { ...S.cfg }; let err = null;
+  formEl.querySelectorAll("input[id^=f_]").forEach(el => {
+    const id = el.id.slice(2), isHM = typeof S.cfg[id] === "number" && ["start", "end", "confirm", "fast", "nightStart", "nightEnd", "arrival", "departure", "coastFrom"].includes(id);
+    const v = isHM ? parseHM(el.value) : (el.value.trim() === "" ? NaN : Number(el.value.replace(",", ".")));
+    if (v === null || Number.isNaN(v)) { if (!err) err = [id, isHM ? "Format HH:MM" : "Nombre attendu"]; } else draft[id] = v;
+  });
+  const se = document.getElementById("f_staysEq"); const staysEq = se ? se.value : S.staysEq;
+  const srcSel = document.getElementById("f_source"); const src = srcSel ? srcSel.value : S.source;
+  err = err || validate(draft, src, staysEq);
+  formEl.querySelectorAll("[id^=f_]").forEach(el => { const bad = err && el.id === "f_" + err[0]; el.classList.toggle("bad", !!bad); el.nextElementSibling.textContent = bad ? "Refusé : " + err[1] : ""; });
+  if (err) return false;
+  S.cfg = draft; S.staysEq = staysEq; render(); return true;
+}
+
+setSource("schedule");
+})();
+</script>
+</body>
+</html>
