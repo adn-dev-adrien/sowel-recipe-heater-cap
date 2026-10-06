@@ -9,13 +9,12 @@
  * ── Three modes, one action pill ──────────────────────────────────────────
  *
  *  auto  (default) — the *veto* mode, the one that runs while guests are in.
- *        The room is theirs up to `maxTemp`; above it the relay opens, and it
- *        closes again once the room falls back under `maxTemp - hysteresis`.
- *        An open window opens the relay too.
- *
- *        The rule that keeps this liveable: **the recipe only ever closes a
- *        relay it opened itself**. A heater the guest switched off stays off;
- *        the recipe is a ceiling, not a thermostat.
+ *        Two bounds own the relay (spec 003): at `maxTemp` and above it is
+ *        open, at `maxTemp - hysteresis` and below it is closed. A hand on the
+ *        relay at either bound gets `manualGrace`, then the bound wins again.
+ *        Between the bounds the last action stands — the recipe's cut or a
+ *        human's switch — until the room reaches the next bound. An open
+ *        window opens the relay too.
  *
  *  frost — the *ownership* mode, for a place standing empty in winter. The
  *        relays stay open, and the recipe closes them only to hold the frost
@@ -267,7 +266,7 @@ const CONTACT_ALIASES = ["contact", "opening", "window", "door"];
 
 type Mode = "auto" | "comfort" | "frost" | "off";
 type SourceParam = "cap" | Source;
-type Hold = "cap" | "window";
+type Hold = "cap" | "window" | "low";
 
 // ============================================================
 // Pure helpers (exported for tests)
@@ -1076,9 +1075,9 @@ export function createRecipe(): RecipeDefinition {
       // ── Persisted state ───────────────────────────────────
 
       let mode: Mode = readMode(ctx.state.get("mode"));
-      /** What we last successfully *ordered*, per heater. Absence means the
-       *  recipe never touched that relay — and a relay it never opened is one
-       *  it must never close. */
+      /** What we last successfully *ordered*, per heater. A hand-back
+       *  (`release`, `stop`) only switches on a relay found here as cut, never
+       *  one the recipe did not cut itself. */
       const commanded = new Map<string, "on" | "off">();
       const storedCommands = ctx.state.get("commanded");
       if (storedCommands && typeof storedCommands === "object") {
@@ -1086,12 +1085,9 @@ export function createRecipe(): RecipeDefinition {
           if (value === "on" || value === "off") commanded.set(id, value);
         }
       }
+      const storedHold = ctx.state.get("holding");
       let holding: Hold | null =
-        ctx.state.get("holding") === "cap"
-          ? "cap"
-          : ctx.state.get("holding") === "window"
-            ? "window"
-            : null;
+        storedHold === "cap" || storedHold === "window" || storedHold === "low" ? storedHold : null;
       let frostHeating = ctx.state.get("frostHeating") === true;
 
       let model: ThermalModel = readModel(ctx.state.get("model"));
@@ -1440,7 +1436,8 @@ export function createRecipe(): RecipeDefinition {
           return;
         }
         for (const id of ids) {
-          if (await send(id, "on")) commanded.delete(id);
+          // Already back on (by hand): nothing to order, just forget the cut.
+          if (readRelayState(eqOf(id)) === true || (await send(id, "on"))) commanded.delete(id);
         }
         ctx.log(`Chauffage rendu — ${reason}`);
         persist();
@@ -1449,53 +1446,86 @@ export function createRecipe(): RecipeDefinition {
       // ── Modes ─────────────────────────────────────────────
 
       async function autoTick(now: number, temp: number | null, windowOpen: boolean): Promise<void> {
+        const restoreAt = maxTemp - hysteresis;
         // A room at the frost floor is a building problem, not a comfort one:
         // nothing the recipe does may keep the heating off down there.
         const frostFloor = temp !== null && temp <= frostTemp;
 
         let want: Hold | null = null;
+        let accepted = false;
         if (!frostFloor) {
           if (windowOpen) want = "window";
           else if (temp !== null) {
             if (temp >= maxTemp) want = "cap";
             // Hysteresis: once cutting, keep cutting until the room has really
-            // come back down, or the relay would chatter around the cap.
-            else if (holding === "cap" && temp > maxTemp - hysteresis) want = "cap";
+            // come back down, or the relay would chatter around the cap —
+            // unless somebody switched it back on by hand: between the bounds
+            // the last action stands.
+            else if (holding === "cap" && temp > restoreAt) {
+              accepted = switchedOnByHand();
+              if (!accepted) want = "cap";
+            }
           }
         }
+        // The low bound: the room is cold enough that the heating must be
+        // possible, whoever switched the relay off.
+        if (want === null && temp !== null && temp <= restoreAt) want = "low";
 
         if (want === null) {
           if (holding !== null) {
-            const reason =
-              frostFloor && temp !== null
-                ? `hors-gel prioritaire (${round1(temp)} °C)`
-                : temp === null
-                  ? "sonde muette"
-                  : holding === "cap"
-                    ? `${round1(temp)} °C, sous le plafond`
-                    : "fenêtre refermée";
-            await release(reason);
+            const reason = accepted
+              ? `allumé à la main, gardé jusqu'à ${maxTemp} °C`
+              : temp === null
+                ? "sonde muette"
+                : holding === "window"
+                  ? "fenêtre refermée"
+                  : null;
+            if (reason === null) {
+              holding = null;
+              persist();
+            } else await release(reason);
           }
           publish("status", temp === null ? "sensor-mute" : "normal");
           return;
         }
 
         if (holding !== want) {
+          const previous = holding;
           holding = want;
           // A new hold starts a new story per heater: whatever the relays did
           // under the previous one must not buy anyone a grace delay now.
           drive.clear();
           graceUntil.clear();
-          ctx.log(
-            want === "cap"
-              ? `Plafond atteint (${temp === null ? "?" : round1(temp)} °C ≥ ${maxTemp} °C) — chauffage coupé`
-              : "Fenêtre ouverte — chauffage coupé",
-          );
+          if (want === "low") {
+            const off = heaterIds.some((id) => readRelayState(eqOf(id)) === false);
+            if (previous === "cap" || previous === "window") {
+              ctx.log(`Chauffage rendu — ${round1(temp!)} °C, sous ${round1(restoreAt)} °C`);
+            } else if (off) {
+              ctx.log(`${round1(temp!)} °C ≤ ${round1(restoreAt)} °C — relais remis sous tension`);
+            }
+          } else {
+            ctx.log(
+              want === "cap"
+                ? `Plafond atteint (${temp === null ? "?" : round1(temp)} °C ≥ ${maxTemp} °C) — chauffage coupé`
+                : "Fenêtre ouverte — chauffage coupé",
+            );
+          }
           persist();
         }
 
-        for (const id of heaterIds) await applyTarget(id, "off", now);
-        publish("status", want === "cap" ? "capped" : "window");
+        const target = want === "low" ? "on" : "off";
+        for (const id of heaterIds) await applyTarget(id, target, now);
+        publish("status", want === "low" ? "normal" : want === "cap" ? "capped" : "window");
+      }
+
+      /** Between the bounds, after a cut: has a human put a relay back on?
+       *  Only a relay seen off since the cut counts, so our own order that has
+       *  not been reported yet never reads as a hand on the switch. */
+      function switchedOnByHand(): boolean {
+        return heaterIds.some((id) => {
+          const d = drive.get(id);
+          return d?.target === "off" && d.reached && readRelayState(eqOf(id)) === true;
+        });
       }
 
       async function frostTick(now: number, temp: number | null, windowOpen: boolean): Promise<void> {
