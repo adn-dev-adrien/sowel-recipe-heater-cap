@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bornes du plafond</title>
+<style>
+:root {
+  --bg: #f6f5f2; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6a66; --line: #e2e0da;
+  --on: #1f7a4d; --on-bg: #e3f3ea; --off: #b3361f; --off-bg: #fbe7e2; --mid: #8a6d1d; --mid-bg: #f8f0d8;
+  --accent: #2c5d8f; --accent-bg: #e6eef7;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --card: #21211f; --ink: #ecebe6; --muted: #a09f99; --line: #3a3936;
+    --on: #6fd3a0; --on-bg: #1d3328; --off: #f08a74; --off-bg: #3a221d; --mid: #e3c56f; --mid-bg: #352d17;
+    --accent: #8db8e6; --accent-bg: #1f2c3a;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
+h1 { font-size: 22px; margin: 0 0 4px; }
+h2 { font-size: 16px; margin: 0 0 10px; }
+.sub { color: var(--muted); margin: 0 0 20px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+ul { margin: 0; padding-left: 20px; }
+li { margin: 4px 0; }
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; margin-bottom: 14px; }
+.tabs button { border: 0; background: none; color: var(--muted); padding: 6px 14px; border-radius: 999px; font: inherit; cursor: pointer; }
+.tabs button.sel { background: var(--accent-bg); color: var(--accent); font-weight: 600; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.temp { font-size: 34px; font-weight: 700; min-width: 120px; font-variant-numeric: tabular-nums; }
+.relay { font-weight: 700; padding: 8px 14px; border-radius: 10px; }
+.relay.on { background: var(--on-bg); color: var(--on); }
+.relay.off { background: var(--off-bg); color: var(--off); }
+.scale { position: relative; height: 34px; margin: 14px 0 4px; border-radius: 8px; overflow: hidden; display: flex; }
+.scale div { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; }
+.lo { background: var(--on-bg); color: var(--on); }
+.md { background: var(--mid-bg); color: var(--mid); }
+.hi { background: var(--off-bg); color: var(--off); }
+.cursor { position: absolute; top: 0; bottom: 0; width: 3px; background: var(--ink); transition: left .15s; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.btns { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.btns button { border: 1px solid var(--line); background: var(--card); color: var(--ink); border-radius: 8px; padding: 8px 12px; font: inherit; cursor: pointer; }
+.btns button:hover { border-color: var(--accent); }
+.status { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--accent-bg); color: var(--ink); }
+.status.bad { background: var(--off-bg); }
+.log { margin-top: 12px; font-size: 13px; color: var(--muted); list-style: none; padding: 0; }
+.log li { border-top: 1px solid var(--line); padding: 4px 0; }
+.log b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+table { border-collapse: collapse; width: 100%; font-size: 14px; }
+td, th { text-align: left; padding: 6px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+.new { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Salle de bain du gîte : les bornes reprennent la main</h1>
+  <p class="sub">Spec 003 — recette Chauffage intelligent, mode plafond</p>
+
+  <section class="card">
+    <h2>En bref</h2>
+    <ul>
+      <li><b>Problème :</b> un relais coupé à la main reste coupé pour toujours, même à 15 °C.</li>
+      <li><b>Proposé :</b> une action à la main dure jusqu'à la prochaine borne (21 ou 24 °C), puis la recette reprend la main.</li>
+      <li><b>Hors champ :</b> les autres pièces du gîte et le bureau. Leurs modes reprennent déjà la main au bout de 2 min.</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>La règle</h2>
+    <table>
+      <tr><th>Pièce</th><th>Relais</th><th>Action à la main</th></tr>
+      <tr><td>≥ 24 °C</td><td>coupé</td><td>tolérée 2 min, puis recoupé (comme aujourd'hui)</td></tr>
+      <tr><td>≤ 21 °C</td><td>autorisé</td><td class="new">tolérée 2 min, puis remis sous tension</td></tr>
+      <tr><td>entre les deux</td><td>dernière action</td><td class="new">gardée jusqu'à la prochaine borne</td></tr>
+    </table>
+  </section>
+
+  <section class="card">
+    <h2>Essaie</h2>
+    <div class="tabs" role="tablist">
+      <button id="t-today" type="button">Aujourd'hui</button>
+      <button id="t-new" type="button" class="sel">Proposé</button>
+    </div>
+    <div class="row">
+      <div class="temp" id="temp">22,6 °C</div>
+      <div class="relay on" id="relay">Autorisé</div>
+    </div>
+    <div class="scale" aria-hidden="true">
+      <div class="lo" style="width:45.45%">≤ 21 °C</div>
+      <div class="md" style="width:27.27%">entre</div>
+      <div class="hi" style="width:27.28%">≥ 24 °C</div>
+      <span class="cursor" id="cursor"></span>
+    </div>
+    <input type="range" id="slider" min="16" max="27" step="0.1" value="22.6" aria-label="Température de la pièce">
+    <div class="btns">
+      <button id="b-on" type="button">Allumer à la main</button>
+      <button id="b-off" type="button">Couper à la main</button>
+      <button id="b-wait" type="button">Attendre 2 min</button>
+      <button id="b-scen" type="button">Rejouer le problème</button>
+    </div>
+    <div class="status" id="status"></div>
+    <ul class="log" id="log"></ul>
+  </section>
+
+  <section class="card">
+    <h2>À trancher</h2>
+    <ul>
+      <li>Sous 21 °C, une coupure à la main est annulée au bout de 2 min (même délai qu'au-dessus de 24). Pour garer le radiateur, il reste le mode Pause. OK ?</li>
+    </ul>
+  </section>
+</main>
+<script>
+(function () {
+  var MAX = 24, LOW = 21, GRACE = 2;
+  var model = "new";
+  var s;
+
+  function reset(temp, relay) {
+    s = { temp: temp, relay: relay, holdCap: false, manualAt: null, clock: 0, log: [] };
+  }
+  function band(t) { return t >= MAX ? "hi" : t <= LOW ? "lo" : "mid"; }
+  function fmt(t) { return t.toFixed(1).replace(".", ",") + " °C"; }
+  function clock() {
+    var m = 16 * 60 + 30 + s.clock;
+    return String(Math.floor(m / 60) % 24).padStart(2, "0") + "h" + String(m % 60).padStart(2, "0");
+  }
+  function log(msg) { s.log.unshift("<b>" + clock() + "</b> " + msg); s.log = s.log.slice(0, 6); }
+
+  /** Apply the recipe once. `entered` = the room just crossed into a new band. */
+  function evaluate(entered) {
+    var b = band(s.temp), target = null;
+    if (model === "new") {
+      target = b === "hi" ? false : b === "lo" ? true : null;
+    } else {
+      if (b === "hi") {
+        if (!s.holdCap) { s.holdCap = true; entered = true; }
+        target = false;
+      } else if (s.holdCap && b === "mid") {
+        target = false;
+      } else if (s.holdCap) {
+        s.holdCap = false; s.manualAt = null;
+        if (!s.relay) { s.relay = true; log("Sous 21 °C — chauffage rendu"); }
+        return;
+      }
+    }
+    if (target === null || s.relay === target) return;
+    if (entered || s.manualAt === null) {
+      s.relay = target; s.manualAt = null;
+      log(target ? "Borne 21 °C atteinte — relais remis sous tension" : "Borne 24 °C atteinte — relais coupé");
+      return;
+    }
+    if (s.clock - s.manualAt < GRACE) return;
+    s.relay = target; s.manualAt = null;
+    log(target ? "Fin de la tolérance — relais remis sous tension" : "Fin de la tolérance — relais recoupé");
+  }
+
+  function status() {
+    var b = band(s.temp), el = document.getElementById("status");
+    el.className = "status";
+    var graceLeft = s.manualAt === null ? 0 : GRACE - (s.clock - s.manualAt);
+    var pending = (model === "new" && ((b === "lo" && !s.relay) || (b === "hi" && s.relay))) ||
+                  (model === "today" && (b === "hi" || (s.holdCap && b === "mid")) && s.relay);
+    if (pending && graceLeft > 0) {
+      el.textContent = "Action à la main tolérée encore " + graceLeft + " min.";
+    } else if (model === "today" && b === "lo" && !s.relay) {
+      el.className = "status bad";
+      el.textContent = "Coincé : la recette ne rallume que ce qu'elle a coupé elle-même. Le client ne peut plus chauffer.";
+    } else if (b === "hi") {
+      el.textContent = "Au-dessus de 24 °C : coupé.";
+    } else if (b === "lo") {
+      el.textContent = "Sous 21 °C : le client peut chauffer avec la télécommande.";
+    } else if (model === "today" && !s.holdCap && !s.relay) {
+      el.className = "status bad";
+      el.textContent = "Coupé à la main : restera coupé, même quand la pièce refroidira.";
+    } else if (model === "today" && s.holdCap) {
+      el.textContent = "Coupé par le plafond jusqu'à 21 °C ; un allumage à la main est recoupé au bout de 2 min.";
+    } else {
+      el.textContent = "Entre 21 et 24 °C : la dernière action est gardée jusqu'à la prochaine borne.";
+    }
+  }
+
+  function render() {
+    document.getElementById("temp").textContent = fmt(s.temp);
+    var r = document.getElementById("relay");
+    r.className = "relay " + (s.relay ? "on" : "off");
+    r.textContent = s.relay ? "Autorisé" : "Coupé";
+    document.getElementById("cursor").style.left = ((s.temp - 16) / 11 * 100) + "%";
+    document.getElementById("slider").value = s.temp;
+    document.getElementById("log").innerHTML = s.log.map(function (l) { return "<li>" + l + "</li>"; }).join("");
+    document.getElementById("t-today").className = model === "today" ? "sel" : "";
+    document.getElementById("t-new").className = model === "new" ? "sel" : "";
+    status();
+  }
+
+  function setTemp(t) {
+    var before = band(s.temp);
+    s.temp = Math.round(t * 10) / 10;
+    s.clock += 1;
+    evaluate(band(s.temp) !== before);
+    render();
+  }
+  function manual(on) {
+    if (s.relay === on) { log(on ? "Déjà allumé" : "Déjà coupé"); render(); return; }
+    s.relay = on; s.manualAt = s.clock;
+    log(on ? "Allumé à la main" : "Coupé à la main");
+    evaluate(false);
+    render();
+  }
+
+  document.getElementById("slider").addEventListener("input", function (e) { setTemp(parseFloat(e.target.value)); });
+  document.getElementById("b-on").addEventListener("click", function () { manual(true); });
+  document.getElementById("b-off").addEventListener("click", function () { manual(false); });
+  document.getElementById("b-wait").addEventListener("click", function () { s.clock += GRACE; evaluate(false); render(); });
+  document.getElementById("b-scen").addEventListener("click", function () {
+    reset(22.6, true);
+    log("Départ : 22,6 °C, relais autorisé");
+    manual(false);
+    s.clock += 30; setTemp(20.5);
+    s.clock += 30; setTemp(19);
+  });
+  function pick(m) { model = m; reset(22.6, true); log(m === "new" ? "Règle proposée" : "Règle actuelle"); render(); }
+  document.getElementById("t-today").addEventListener("click", function () { pick("today"); });
+  document.getElementById("t-new").addEventListener("click", function () { pick("new"); });
+
+  pick("new");
+})();
+</script>
+</body>
+</html>

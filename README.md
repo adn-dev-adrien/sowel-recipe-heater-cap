@@ -54,7 +54,7 @@ and weeks where the place stands empty.
 
 | Mode        | Behaviour                                                                                     |
 | ----------- | --------------------------------------------------------------------------------------------- |
-| **auto**    | Veto mode. The room is the guest's up to `maxTemp`; above it the relay opens and closes back once the room falls under `maxTemp − hysteresis`. An open window opens the relay too. |
+| **auto**    | Two bounds own the relay: open at `maxTemp` and above, closed at `maxTemp − hysteresis` and below. Between them the last action stands until the next bound. An open window opens the relay too. |
 | **frost**   | Ownership mode, for an empty house. Relays stay open; the recipe closes them only to hold the frost floor (heat under `frostTemp`, stop at `frostTemp + frostBand`). |
 | **off**     | Parked. Anything held open is handed back.                                                     |
 
@@ -62,9 +62,9 @@ Modes are switched from the pill on the recipe instance (Zone page), not from a 
 owner flips to `frost` when the season's last guest leaves and back to `auto` before the next
 arrival. Leaving `frost` hands the heaters back on, so nobody arrives to dead radiators.
 
-**The recipe only ever closes a relay it opened itself.** A heater the guest switched off stays
-off: this is a ceiling, not a thermostat. (`frost` is the exception — an empty house is the
-recipe's to drive.)
+**A manual action lasts until the next bound** (spec 003). Switched by hand at either bound, the
+relay gets `manualGrace` (2 min), then the bound wins again. Between the bounds, a manual switch —
+on or off — is kept until the room reaches the next bound. Use the `off` mode to park a heater.
 
 ## Open windows
 

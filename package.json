@@ -1,6 +1,6 @@
 {
   "name": "sowel-recipe-heater-cap",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Sowel recipe: smart heating for on/off electric heaters — schedule, stays or day/night, presence, learned pre-heat, weather, window cut-off, temperature cap",
   "type": "module",
   "main": "dist/index.js",

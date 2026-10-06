@@ -2,7 +2,7 @@
   "id": "heater-cap",
   "type": "recipe",
   "name": "Smart Heating",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Heats a room through on/off relays: work schedule, stays or day/night, optional presence, a learned pre-heat that reaches the target on time, weather, open-window cut-off and a ceiling. With no occupancy source, the original temperature cap.",
   "icon": "Thermometer",
   "repo": "adn-dev-adrien/sowel-recipe-heater-cap",

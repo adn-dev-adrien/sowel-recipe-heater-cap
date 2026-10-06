@@ -286,22 +286,76 @@ describe("temperature cap", () => {
     handle.stop();
   });
 
-  it("never switches on a heater the guest switched off", async () => {
+  it("keeps a manual switch-off between the bounds, until the low bound", async () => {
     const heater = makeHeater("heater-1", "Radiateur", false);
-    const sensor = makeSensor("sensor-1", "Sonde", 25);
-    const { ctx, orders } = makeCtx([heater, sensor]);
+    const sensor = makeSensor("sensor-1", "Sonde", 23.8);
+    const { ctx, orders, logs } = makeCtx([heater, sensor]);
+    const handle = createRecipe().createInstance(BASE_PARAMS, ctx as never);
+
+    await flush();
+    await ticks(2);
+    expect(orders).toHaveLength(0);
+    expect(relayOn(heater)).toBe(false);
+
+    // Down to the low bound (24 - 0.5): the heating must be possible again.
+    setTemp(sensor, 23.5);
+    await ticks(1);
+    expect(relayOn(heater)).toBe(true);
+    expect(orders).toHaveLength(1);
+    expect(logs.some((l) => l.includes("remis sous tension"))).toBe(true);
+
+    handle.stop();
+    expect(orders).toHaveLength(1);
+  });
+
+  it("under the low bound, tolerates a manual switch-off for the grace delay, then switches back on", async () => {
+    const heater = makeHeater("heater-1", "Radiateur", true);
+    const sensor = makeSensor("sensor-1", "Sonde", 20);
+    const { ctx, orders, logs } = makeCtx([heater, sensor]);
     const handle = createRecipe().createInstance(BASE_PARAMS, ctx as never);
 
     await flush();
     expect(orders).toHaveLength(0);
 
-    setTemp(sensor, 18);
-    await ticks(2);
-    expect(orders).toHaveLength(0);
+    setRelay(heater, false);
+    await vi.advanceTimersByTimeAsync(90_000);
     expect(relayOn(heater)).toBe(false);
+    expect(logs.some((l) => l.includes("commande manuelle"))).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(150_000);
+    expect(relayOn(heater)).toBe(true);
+    expect(orders).toHaveLength(1);
+    expect(logs.some((l) => l.includes("chauffage rétabli"))).toBe(true);
 
     handle.stop();
-    expect(orders).toHaveLength(0);
+  });
+
+  it("keeps a manual switch-on after a cut until the room reaches the cap again", async () => {
+    const heater = makeHeater("heater-1", "Radiateur", true);
+    const sensor = makeSensor("sensor-1", "Sonde", 25);
+    const { ctx, orders, logs } = makeCtx([heater, sensor]);
+    const handle = createRecipe().createInstance(BASE_PARAMS, ctx as never);
+
+    await flush();
+    expect(relayOn(heater)).toBe(false);
+
+    setTemp(sensor, 23.8);
+    await ticks(1);
+    expect(relayOn(heater)).toBe(false);
+
+    setRelay(heater, true); // somebody switches it back on, between the bounds
+    await ticks(1);
+    expect(logs.some((l) => l.includes("allumé à la main"))).toBe(true);
+    await vi.advanceTimersByTimeAsync(10 * 60_000);
+    expect(relayOn(heater)).toBe(true);
+    expect(orders).toHaveLength(1);
+
+    setTemp(sensor, 24.1);
+    await ticks(1);
+    expect(relayOn(heater)).toBe(false);
+    expect(orders).toHaveLength(2);
+
+    handle.stop();
   });
 
   it("tolerates a manual switch-on for the grace delay, then caps again", async () => {
