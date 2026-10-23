@@ -165,6 +165,9 @@ describe("office day, simulated room", () => {
     const out = sensor("out", 3);
     const { ctx, logs, state } = makeCtx([h1, h2, room, pir, out]);
     const temp = { v: 14 };
+    // A room the recipe has already learned: the cautious seed (slow heaters)
+    // would, by design, start a cold room's pre-heat hours ahead.
+    state.set("model", { gain: 3.3, tau: 16, gainSamples: 5, tauSamples: 5 });
     const handle = createRecipe().createInstance(OFFICE_PARAMS, ctx as never);
     const samples = new Map<string, { temp: number; h1: boolean; h2: boolean }>();
     await runUntil(at(5, 20, 0), (now) => {
