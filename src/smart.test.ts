@@ -301,4 +301,30 @@ describe("modes in smart heating", () => {
     expect(temp.v).toBeGreaterThanOrEqual(19.6);
     handle.stop();
   });
+
+  it("tells when the pre-heat is planned to start, before it does", async () => {
+    vi.setSystemTime(at(6, 8, 0));
+    const h1 = heater("h1");
+    const room = sensor("room", 17);
+    const stays: Eq = {
+      id: "stays",
+      name: "Séjours Gîte",
+      type: "sensor",
+      dataBindings: [
+        { alias: "occupied", value: false },
+        { alias: "arrival", value: new Date(at(6, 16, 0)).toISOString() },
+        { alias: "departure", value: new Date(at(9, 10, 0)).toISOString() },
+      ],
+      orderBindings: [],
+    };
+    const { ctx, state } = makeCtx([h1, room, stays, sensor("out", 10)]);
+    const handle = createRecipe().createInstance(
+      { zone: "z", heaters: ["h1"], sensor: "room", source: "stays", stays: "stays", comfortTemp: 20, nightTemp: 17, frostTemp: 7, outdoorSensor: "out" },
+      ctx as never,
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    const summary = String(state.get("summary"));
+    expect(summary).toMatch(/^Vide — arrivée \d\d\/\d\d 16:00 · préchauffe vers (0[89]|1\d):\d\d$/);
+    handle.stop();
+  });
 });

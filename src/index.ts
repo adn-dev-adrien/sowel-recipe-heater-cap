@@ -1752,10 +1752,12 @@ export function createRecipe(): RecipeDefinition {
 
         // Pre-heat: the plan is about to ask for more than the room has.
         if (preheat && now >= preheat.until) preheat = null;
+        let preheatDueAt: number | null = null;
         if (mode === "auto" && temp !== null && !preheat) {
           const rise = nextRise(now, Math.max(planned, target), stay);
           if (rise) {
             const need = timeToReach(model, temp, rise.target, now, out.outdoorAt);
+            if (Number.isFinite(need)) preheatDueAt = rise.at - need - PREHEAT_MARGIN_MS;
             if (now + need + PREHEAT_MARGIN_MS >= rise.at) {
               preheat = { until: rise.at, target: rise.target, startedAt: now };
               lastPreheatStart = now;
@@ -1823,7 +1825,8 @@ export function createRecipe(): RecipeDefinition {
 
         publish("target", target);
         publish("status", why || (want ? "heating" : "idle"));
-        publish("summary", summaryFor(verdict, target, why, stay));
+        const due = preheatDueAt !== null && preheatDueAt > now && !preheat && !why ? ` · préchauffe vers ${hm(preheatDueAt)}` : "";
+        publish("summary", summaryFor(verdict, target, why, stay) + due);
         const countdown = verdict.nextCheckAt ?? preheat?.until ?? null;
         if (countdown !== null && countdown > now) publish("timerExpiresAt", new Date(countdown).toISOString());
         else if (published.get("timerExpiresAt") !== undefined) {
