@@ -327,6 +327,78 @@ describe("modes in smart heating", () => {
     handle.stop();
   });
 
+  it("drops a pre-heat whose rise has been cancelled", async () => {
+    vi.setSystemTime(at(6, 10, 0));
+    const h1 = heater("h1");
+    const stays: Eq = {
+      id: "stays",
+      name: "Séjours Gîte",
+      type: "sensor",
+      dataBindings: [
+        { alias: "occupied", value: false },
+        { alias: "arrival", value: new Date(at(6, 16, 0)).toISOString() },
+        { alias: "departure", value: new Date(at(9, 10, 0)).toISOString() },
+      ],
+      orderBindings: [],
+    };
+    const { ctx, state, logs } = makeCtx([h1, sensor("room", 17), stays, sensor("out", 10)]);
+    const handle = createRecipe().createInstance({ zone: "z", heaters: ["h1"], sensor: "room", source: "stays", stays: "stays", comfortTemp: 20, nightTemp: 17, frostTemp: 7, outdoorSensor: "out" }, ctx as never);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(String(state.get("summary"))).toMatch(/^Préchauffe/);
+    stays.dataBindings.find((b) => b.alias === "arrival")!.value = new Date(at(8, 16, 0)).toISOString();
+    stays.dataBindings.find((b) => b.alias === "departure")!.value = new Date(at(11, 10, 0)).toISOString();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(logs.some((l) => l.startsWith("Préchauffe annulée"))).toBe(true);
+    expect(String(state.get("summary"))).not.toMatch(/^Préchauffe/);
+    handle.stop();
+  });
+
+  it("keeps the relays untouched while the stay cannot be read", async () => {
+    vi.setSystemTime(at(6, 10, 0));
+    const h1 = heater("h1");
+    h1.dataBindings[0].value = "ON";
+    const stays: Eq = {
+      id: "stays",
+      name: "Séjours Gîte",
+      type: "sensor",
+      dataBindings: [{ alias: "occupied" }, { alias: "arrival" }, { alias: "departure" }],
+      orderBindings: [],
+    };
+    const { ctx } = makeCtx([h1, sensor("room", 17), stays, sensor("out", 10)]);
+    const handle = createRecipe().createInstance({ zone: "z", heaters: ["h1"], sensor: "room", source: "stays", stays: "stays", comfortTemp: 20, nightTemp: 17, frostTemp: 7, outdoorSensor: "out" }, ctx as never);
+    await vi.advanceTimersByTimeAsync(5 * 60_000);
+    expect(on(h1)).toBe(true);
+    handle.stop();
+  });
+
+  it("a window cut by the temperature drop lasts more than one tick when the room is driven", async () => {
+    vi.setSystemTime(at(6, 12, 0));
+    const h1 = heater("h1");
+    const room = sensor("room", 19.5);
+    const stays: Eq = {
+      id: "stays",
+      name: "Séjours Gîte",
+      type: "sensor",
+      dataBindings: [
+        { alias: "occupied", value: true },
+        { alias: "arrival", value: new Date(at(5, 16, 0)).toISOString() },
+        { alias: "departure", value: new Date(at(9, 10, 0)).toISOString() },
+      ],
+      orderBindings: [],
+    };
+    const { ctx, logs } = makeCtx([h1, room, stays, sensor("out", 10)]);
+    const handle = createRecipe().createInstance({ zone: "z", heaters: ["h1"], sensor: "room", source: "stays", stays: "stays", comfortTemp: 20, nightTemp: 17, frostTemp: 7, outdoorSensor: "out" }, ctx as never);
+    await runUntil(at(6, 12, 12), () => undefined);
+    expect(on(h1)).toBe(true);
+    room.dataBindings[0].value = 18.8;
+    await runUntil(at(6, 12, 15), () => undefined);
+    expect(logs.some((l) => l.startsWith("Chute de"))).toBe(true);
+    // The cut must outlive the tick that detected it, not reopen 30 s later.
+    await runUntil(at(6, 12, 18), () => undefined);
+    expect(on(h1)).toBe(false);
+    handle.stop();
+  });
+
   it("tells when the pre-heat is planned to start, before it does", async () => {
     vi.setSystemTime(at(6, 8, 0));
     const h1 = heater("h1");

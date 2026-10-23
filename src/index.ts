@@ -73,6 +73,7 @@ import {
   atMinute,
   hm,
   minuteOfDay,
+  startOfDay,
   planAt,
   type Level,
   type OccupancyConfig,
@@ -405,10 +406,14 @@ export function readStay(eq: EquipmentLite | null): Stay | null {
   const date = (alias: string): number | null => {
     const v = value(alias);
     if (typeof v !== "string" || v.trim() === "") return null;
-    const t = Date.parse(v);
+    // A bare date has no zone: Date.parse would read it as midnight UTC (01:00-02:00 here).
+    const bare = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v.trim());
+    const t = bare ? new Date(Number(bare[1]), Number(bare[2]) - 1, Number(bare[3])).getTime() : Date.parse(v);
     return Number.isFinite(t) ? t : null;
   };
   const occupied = value("occupied");
+  // Nothing published yet (restart, plugin not connected): unknown, not "empty".
+  if ([occupied, value("arrival"), value("departure")].every((x) => x === undefined || x === null)) return null;
   return {
     occupied: occupied === undefined || occupied === null ? false : isOnValue(occupied),
     arrival: date("arrival"),
@@ -1328,7 +1333,8 @@ export function createRecipe(): RecipeDefinition {
         return target.toUpperCase();
       }
 
-      async function send(id: string, target: "on" | "off"): Promise<boolean> {
+      async function send(id: string, target: "on" | "off", force = false): Promise<boolean> {
+        if (stopped && !force) return false;
         const eq = eqOf(id);
         const alias = eq ? findOnOffOrderAlias(eq) : null;
         if (!eq || !alias) {
@@ -1342,6 +1348,11 @@ export function createRecipe(): RecipeDefinition {
               `${nameOf(id)} : échec de l'ordre ${target.toUpperCase()} — ${res.error ?? "erreur inconnue"}`,
               "error",
             );
+            return false;
+          }
+          if (stopped && !force && target === "off") {
+            // The instance was stopped while this cut was in flight: nobody owns it any more.
+            void send(id, "on", true).catch(() => undefined);
             return false;
           }
           const at = Date.now();
@@ -1630,6 +1641,8 @@ export function createRecipe(): RecipeDefinition {
         blind: "estimation, aucune source",
       };
       const PREHEAT_MARGIN_MS = 15 * 60_000;
+      /** A pre-heat never starts earlier than this, even when the room cannot reach the target. */
+      const MAX_PREHEAT_MS = 6 * 3_600_000;
       /** Irradiance (W/m²) above which the sun is trusted to do the heating. */
       const SUN_TRUST_WM2 = 300;
 
@@ -1667,7 +1680,7 @@ export function createRecipe(): RecipeDefinition {
           stretch = null;
           const st = { startAt: s0.startAt, endAt: now, startTemp: s0.startTemp, endTemp: temp, outdoor: s0.outdoorSum / Math.max(1, s0.n) };
           const learned =
-            s0.kind === "cool" ? (s0.sunny ? null : learnFromCooling(model, st)) : learnFromHeating(model, st);
+            s0.sunny ? null : s0.kind === "cool" ? learnFromCooling(model, st) : learnFromHeating(model, st);
           if (!learned) return;
           const before = model;
           model = learned;
@@ -1690,15 +1703,17 @@ export function createRecipe(): RecipeDefinition {
           stretch = { kind, startAt: now, startTemp: temp, outdoorSum: 0, n: 0, sunny: false };
           return;
         }
-        // Skip the first minutes of a heating stretch: heaters and sensor lag.
-        if (stretch.kind === "heat" && stretch.n === 0 && now - stretch.startAt < HEAT_SETTLE_MS) return;
-        if (stretch.kind === "heat" && stretch.n === 0) {
+        // Skip the first minutes of a stretch: heaters stay warm after a cut, sensors lag.
+        if (stretch.n === 0 && now - stretch.startAt < HEAT_SETTLE_MS) return;
+        if (stretch.n === 0) {
           stretch.startAt = now;
           stretch.startTemp = temp;
         }
         stretch.outdoorSum += out.outdoorAt(now);
         stretch.n++;
-        if (out.sunAt(now) > 50) stretch.sunny = true;
+        // Without an hourly forecast the sun is unknown: treat daytime as sunny rather than learn from it.
+        const daytime = new Date(now).getHours() >= 9 && new Date(now).getHours() < 18;
+        if (out.sunAt(now) > 50 || (out.source !== "forecast" && daytime)) stretch.sunny = true;
         // Close long stretches so the model keeps learning through a cold night.
         if (now - stretch.startAt >= 3 * 3_600_000 && now - stretch.startAt >= MIN_STRETCH_MS) {
           close();
@@ -1739,6 +1754,12 @@ export function createRecipe(): RecipeDefinition {
         snapshotForecast(now);
         const out = outside(now);
         const stay = stayNow();
+        if (source === "stays" && stay === null) {
+          // Unknown is not empty: leave the relays as they are until the stay is readable.
+          warnOnce("stay-unknown", "Séjours : aucune valeur lisible — rien n'est commandé en attendant");
+          return;
+        }
+        warned.delete("stay-unknown");
 
         if (mode === "comfort" && comfortUntil !== null && now >= comfortUntil) {
           mode = "auto";
@@ -1746,12 +1767,19 @@ export function createRecipe(): RecipeDefinition {
           ctx.state.delete("comfortUntil");
           publish("mode", mode);
           ctx.log("Fin du confort forcé — retour en automatique");
+          if (!driven) await release("fin du confort forcé");
         }
 
         const verdict: Verdict =
           mode === "comfort"
             ? { level: "comfort", phase: "plan", nextCheckAt: null, events: [] }
-            : occupancy.tick({ now, motionNow: motionNow(), stay, preheatStartedAt: lastPreheatStart });
+            : occupancy.tick({
+                now,
+                motionNow: motionNow(),
+                stay,
+                // Only today's pre-heat says when the day started: an older one would make last Friday's motion count.
+                preheatStartedAt: lastPreheatStart !== null && lastPreheatStart >= startOfDay(now) ? lastPreheatStart : null,
+              });
         for (const e of verdict.events) ctx.log(e.text, e.level);
         save("occupancy", occupancy.snapshot());
 
@@ -1760,13 +1788,19 @@ export function createRecipe(): RecipeDefinition {
 
         // Pre-heat: the plan is about to ask for more than the room has.
         if (preheat && now >= preheat.until) preheat = null;
+        // The plan moved (stay cancelled or pushed back): stop heating for a rise that is gone.
+        if (preheat && levelTemp(planAt(occCfg, preheat.until, stay)) < preheat.target) {
+          ctx.log(`Préchauffe annulée : le plan ne demande plus ${preheat.target} °C à ${hm(preheat.until)}`);
+          preheat = null;
+        }
         let preheatDueAt: number | null = null;
         if (mode === "auto" && temp !== null && !preheat) {
           const rise = nextRise(now, Math.max(planned, target), stay);
           if (rise) {
-            const need = timeToReach(model, temp, rise.target, now, out.outdoorAt);
+            const reach = timeToReach(model, temp, rise.target, now, out.outdoorAt);
+            const need = Math.min(reach, MAX_PREHEAT_MS);
             // Shown rounded down to 5 min so the tile text does not change every tick.
-            if (Number.isFinite(need) && need > 0) {
+            if (need > 0) {
               preheatDueAt = Math.floor((rise.at - need - PREHEAT_MARGIN_MS) / 300_000) * 300_000;
             }
             if (now + need + PREHEAT_MARGIN_MS >= rise.at) {
@@ -1775,7 +1809,7 @@ export function createRecipe(): RecipeDefinition {
               ctx.state.set("lastPreheatStart", now);
               ctx.log(
                 `Préchauffe : ${round1(temp)} °C dedans, ${round1(out.outdoorAt(now))} °C dehors (${OUTSIDE_LABEL[out.source]}) → ` +
-                  `${rise.target} °C à ${hm(rise.at)}${Number.isFinite(need) ? `, ${Math.round(need / 60_000)} min estimées` : ", au maximum"}`,
+                  `${rise.target} °C à ${hm(rise.at)}${Number.isFinite(reach) ? `, ${Math.round(need / 60_000)} min estimées` : ", au maximum"}`,
               );
             }
           }
@@ -1864,7 +1898,7 @@ export function createRecipe(): RecipeDefinition {
 
         // Only sample a room whose heating is free to answer: capping, frost
         // mode and the paused mode all cool it for reasons of their own.
-        const suspended = mode !== "auto" || holding === "cap" || (driven && !heating);
+        const suspended = mode !== "auto" || holding === "cap" || (driven && !heating && dropCutAt === null);
         if (!suspended) recordSample(now, temp);
         const contacts = readContacts(now);
         const drop = contacts === true ? false : evaluateDrop(now, temp, suspended);
@@ -1974,7 +2008,7 @@ export function createRecipe(): RecipeDefinition {
           const held = heaterIds.filter((id) => commanded.get(id) === "off");
           for (const id of held) {
             commanded.delete(id);
-            void send(id, "on").catch(() => undefined);
+            void send(id, "on", true).catch(() => undefined);
           }
           holding = null;
           persist();
@@ -2007,7 +2041,7 @@ export function createRecipe(): RecipeDefinition {
           }
           preheat = null;
           coasting = false;
-          const handBack = previous === "frost" || mode === "off";
+          const handBack = previous === "frost" || mode === "off" || (previous === "comfort" && !driven);
           if (handBack || mode === "frost") frostHeating = false;
           drive.clear();
           graceUntil.clear();

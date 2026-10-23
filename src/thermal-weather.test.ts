@@ -87,12 +87,20 @@ describe("outside", () => {
     expect(parseHourly({ hours: "nope" })).toEqual([]);
   });
 
-  it("prefers the series, corrected by the live sensor", () => {
-    const o = buildOutside(T0 + H, parseHourly(series), 13, []);
+  it("prefers the series, corrected by the live sensor, the correction fading out", () => {
+    // At T0 the series says 10 and the sun is down; the sensor says 13 → +3 bias.
+    const o = buildOutside(T0, parseHourly(series), 13, []);
     expect(o.source).toBe("forecast");
-    expect(o.outdoorAt(T0 + H)).toBeCloseTo(13); // series says 11, sensor 13 → +2 bias
-    expect(o.outdoorAt(T0 + 2 * H + H / 2)).toBeCloseTo(14.5);
+    expect(o.outdoorAt(T0)).toBeCloseTo(13);
+    expect(o.outdoorAt(T0 + H + H / 2)).toBeCloseTo(11.5 + 3 * 0.5); // halfway through the 3 h fade
+    expect(o.outdoorAt(T0 + 3 * H)).toBeCloseTo(13); // series alone: bias gone
     expect(o.sunAt(T0 + 2 * H)).toBeCloseTo(250);
+  });
+
+  it("ignores a live sensor read under the sun", () => {
+    // At T0 + 1 h the series carries 100 W/m²: the sensor may be sun-warmed.
+    const o = buildOutside(T0 + H, parseHourly(series), 16, []);
+    expect(o.outdoorAt(T0 + H)).toBeCloseTo(11);
   });
 
   it("falls back to the sensor, then yesterday's snapshot, then a cold default", () => {
