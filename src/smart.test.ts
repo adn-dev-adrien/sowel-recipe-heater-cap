@@ -302,6 +302,31 @@ describe("modes in smart heating", () => {
     handle.stop();
   });
 
+  it("re-seeds a never-learned stored gain even when thermal.js is a stale module", async () => {
+    vi.setSystemTime(at(6, 8, 0));
+    const h1 = heater("h1");
+    const stays: Eq = {
+      id: "stays",
+      name: "Séjours Gîte",
+      type: "sensor",
+      dataBindings: [
+        { alias: "occupied", value: false },
+        { alias: "arrival", value: new Date(at(6, 16, 0)).toISOString() },
+        { alias: "departure", value: new Date(at(9, 10, 0)).toISOString() },
+      ],
+      orderBindings: [],
+    };
+    const { ctx, state, logs } = makeCtx([h1, sensor("room", 17), stays, sensor("out", 10)]);
+    state.set("model", { gain: 2.5, tau: 90, gainSamples: 0, tauSamples: 30 });
+    const handle = createRecipe().createInstance(
+      { zone: "z", heaters: ["h1"], sensor: "room", source: "stays", stays: "stays", comfortTemp: 20, nightTemp: 17, frostTemp: 7, outdoorSensor: "out" },
+      ctx as never,
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(logs.some((l) => l.includes("modèle 1.0 °C/h · 90.0 h"))).toBe(true);
+    handle.stop();
+  });
+
   it("tells when the pre-heat is planned to start, before it does", async () => {
     vi.setSystemTime(at(6, 8, 0));
     const h1 = heater("h1");

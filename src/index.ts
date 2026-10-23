@@ -889,6 +889,9 @@ const FR: RecipeLangPack = {
 // Recipe
 // ============================================================
 
+/** Gain (°C/h) assumed for a room that has never been heated under the recipe. */
+const SEED_GAIN = 1;
+
 export function createRecipe(): RecipeDefinition {
   return {
     id: "heater-cap",
@@ -1090,7 +1093,12 @@ export function createRecipe(): RecipeDefinition {
         storedHold === "cap" || storedHold === "window" || storedHold === "low" ? storedHold : null;
       let frostHeating = ctx.state.get("frostHeating") === true;
 
-      let model: ThermalModel = readModel(ctx.state.get("model"));
+      // Sowel hot-reloads only this entry file on a package update: `./thermal.js`
+      // stays the version loaded at boot until Sowel restarts. A gain that was
+      // never learned is therefore re-seeded here as well, so a new seed takes
+      // effect on update. Keep SEED_GAIN equal to DEFAULT_MODEL.gain.
+      const stored = readModel(ctx.state.get("model"));
+      let model: ThermalModel = stored.gainSamples === 0 ? { ...stored, gain: SEED_GAIN } : stored;
       const occupancy = new Occupancy(occCfg, ctx.state.get("occupancy"));
       let comfortUntil = typeof ctx.state.get("comfortUntil") === "number" ? (ctx.state.get("comfortUntil") as number) : null;
       let preheat: { until: number; target: number; startedAt: number } | null = null;
