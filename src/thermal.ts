@@ -1,16 +1,18 @@
 /**
  * The room as a single thermal mass, learned from what the recipe observes.
  *
- *   dT/dt = gain·heating − (T − Tout) / tau          (°C per hour)
+ *   dT/dt = gain·heating + solar·sun/1000 − (T − Tout) / tau     (°C per hour)
  *
  * `gain` is how fast every heater together warms the room when it is as warm
  * as outside; `tau` is how long the room takes to lose about two thirds of its
- * lead over outside. Both are learned on the fly:
+ * lead over outside; `solar` is what 1000 W/m² of sun adds to the room (its
+ * windows' share), so an overcast day adds little and a clear one a lot, with
+ * every grey in between. All three are learned on the fly:
  *
- *  - `tau` from cooling stretches (heaters off for a while, at night, so the
- *    sun does not pass for good insulation);
+ *  - `tau` from cooling stretches with (almost) no sun;
+ *  - `solar` from cooling stretches under the sun, once the loss is added back;
  *  - `gain` from heating stretches (heaters on for a while), once the loss the
- *    room suffered meanwhile has been added back.
+ *    room suffered meanwhile has been added back and the sun taken off.
  *
  * Seeds are deliberately pessimistic — a weak heater in a leaky room — so the
  * first pre-heats start early rather than late: arriving to a warm room twenty
@@ -27,14 +29,21 @@ export interface ThermalModel {
   gain: number;
   /** Hours. */
   tau: number;
+  /** °C/h added by 1000 W/m² of sun. */
+  solar: number;
   gainSamples: number;
   tauSamples: number;
+  solarSamples: number;
 }
 
-export const DEFAULT_MODEL: ThermalModel = { gain: 1, tau: 15, gainSamples: 0, tauSamples: 0 };
+// Solar starts at 0: until the room has shown what the sun does, a pre-heat does not count on it.
+export const DEFAULT_MODEL: ThermalModel = { gain: 1, tau: 15, solar: 0, gainSamples: 0, tauSamples: 0, solarSamples: 0 };
 
 const GAIN_RANGE: [number, number] = [0.3, 12];
 const TAU_RANGE: [number, number] = [2, 120];
+const SOLAR_RANGE: [number, number] = [0, 3];
+/** Mean irradiance (W/m²) under which a stretch counts as sun-free (tau) and above which it teaches `solar`. */
+export const SUN_FREE_WM2 = 50;
 /** Learning weight of a new observation while the model is young, then settled. */
 const ALPHA_YOUNG = 0.5;
 const ALPHA_SETTLED = 0.2;
@@ -57,8 +66,10 @@ export function readModel(value: unknown): ThermalModel {
     // With no heating observed, the stored gain is only an old seed: take the current one.
     gain: gainSamples === 0 ? DEFAULT_MODEL.gain : clamp(num(v.gain, DEFAULT_MODEL.gain), GAIN_RANGE),
     tau: clamp(num(v.tau, DEFAULT_MODEL.tau), TAU_RANGE),
+    solar: clamp(num(v.solar, DEFAULT_MODEL.solar), SOLAR_RANGE),
     gainSamples,
     tauSamples: Math.max(0, Math.floor(num(v.tauSamples, 0))),
+    solarSamples: Math.max(0, Math.floor(num(v.solarSamples, 0))),
   };
 }
 
@@ -74,14 +85,26 @@ export interface Stretch {
   endTemp: number;
   /** Mean outdoor temperature over the stretch. */
   outdoor: number;
+  /** Mean irradiance over the stretch, W/m². Absent = no sun. */
+  sun?: number;
 }
 
-/** Folds a cooling stretch (heaters off) into `tau`. Returns null when the stretch says nothing. */
+/**
+ * Folds a cooling stretch (heaters off) into the model: `tau` when the sky was
+ * dark, `solar` when the sun was up. Returns null when the stretch says nothing.
+ */
 export function learnFromCooling(model: ThermalModel, s: Stretch): ThermalModel | null {
   const hours = (s.endAt - s.startAt) / 3_600_000;
   if (hours * 3_600_000 < MIN_STRETCH_MS) return null;
   const slope = (s.endTemp - s.startTemp) / hours;
   const lead = (s.startTemp + s.endTemp) / 2 - s.outdoor;
+  const sun = s.sun ?? 0;
+  if (sun > SUN_FREE_WM2) {
+    // What the room did beyond the loss tau predicts is the sun's doing. Needs a tau worth trusting.
+    if (model.tauSamples === 0) return null;
+    const observed = clamp((slope + lead / model.tau) / (sun / 1000), SOLAR_RANGE);
+    return { ...model, solar: blend(model.solar, observed, model.solarSamples), solarSamples: model.solarSamples + 1 };
+  }
   if (lead < MIN_LEAD_C || slope >= -0.05) return null;
   const observed = clamp(lead / -slope, TAU_RANGE);
   return { ...model, tau: blend(model.tau, observed, model.tauSamples), tauSamples: model.tauSamples + 1 };
@@ -94,7 +117,7 @@ export function learnFromHeating(model: ThermalModel, s: Stretch): ThermalModel 
   const slope = (s.endTemp - s.startTemp) / hours;
   if (slope <= 0) return null;
   const lead = (s.startTemp + s.endTemp) / 2 - s.outdoor;
-  const observed = clamp(slope + lead / model.tau, GAIN_RANGE);
+  const observed = clamp(slope + lead / model.tau - (model.solar * (s.sun ?? 0)) / 1000, GAIN_RANGE);
   return { ...model, gain: blend(model.gain, observed, model.gainSamples), gainSamples: model.gainSamples + 1 };
 }
 
@@ -103,7 +126,7 @@ const STEP_H = STEP_MS / 3_600_000;
 
 /**
  * Minutes needed to bring the room from `temp` to `target` with every heater
- * on, given the outdoor temperature over time. `Infinity` when the heaters
+ * on, given the outdoor temperature and the sun over time. `Infinity` when the heaters
  * cannot get there within `horizonMs` — the room's balance point is below the
  * target on a cold night.
  */
@@ -113,13 +136,14 @@ export function timeToReach(
   target: number,
   from: number,
   outdoorAt: (t: number) => number,
+  sunAt: (t: number) => number = () => 0,
   horizonMs = 14 * 3_600_000,
 ): number {
   let t = temp;
   for (let k = 0; k * STEP_MS <= horizonMs; k++) {
     if (t >= target) return k * STEP_MS;
     const at = from + k * STEP_MS;
-    t += (model.gain - (t - outdoorAt(at)) / model.tau) * STEP_H;
+    t += (model.gain + (model.solar * sunAt(at)) / 1000 - (t - outdoorAt(at)) / model.tau) * STEP_H;
   }
   return Infinity;
 }
@@ -131,8 +155,9 @@ export function coastTo(
   from: number,
   until: number,
   outdoorAt: (t: number) => number,
+  sunAt: (t: number) => number = () => 0,
 ): number {
   let t = temp;
-  for (let at = from; at < until; at += STEP_MS) t -= ((t - outdoorAt(at)) / model.tau) * STEP_H;
+  for (let at = from; at < until; at += STEP_MS) t += ((model.solar * sunAt(at)) / 1000 - (t - outdoorAt(at)) / model.tau) * STEP_H;
   return t;
 }

@@ -6,6 +6,7 @@ import {
   isContactOpen,
   isOnValue,
   normalizeIds,
+  readStay,
 } from "./index.js";
 
 // ============================================================
@@ -687,5 +688,19 @@ describe("lifecycle", () => {
     expect(relayOn(heater)).toBe(false);
 
     handle.stop();
+  });
+});
+
+describe("readStay edge cases", () => {
+  const eq = (bindings: Array<{ alias: string; value?: unknown }>): never =>
+    ({ id: "s", name: "s", type: "sensor", dataBindings: bindings, orderBindings: [] }) as never;
+
+  it("is unknown, not empty, while nothing is published", () => {
+    expect(readStay(eq([{ alias: "occupied" }, { alias: "arrival" }, { alias: "departure" }]))).toBeNull();
+  });
+
+  it("reads a bare date as local midnight", () => {
+    const s = readStay(eq([{ alias: "occupied", value: false }, { alias: "arrival", value: "2026-10-26" }]));
+    expect(s?.arrival).toBe(new Date(2026, 9, 26).getTime());
   });
 });
