@@ -1103,7 +1103,13 @@ export function createRecipe(): RecipeDefinition {
       // never learned is therefore re-seeded here as well, so a new seed takes
       // effect on update. Keep SEED_GAIN equal to DEFAULT_MODEL.gain.
       const stored = readModel(ctx.state.get("model"));
-      let model: ThermalModel = stored.gainSamples === 0 ? { ...stored, gain: SEED_GAIN } : stored;
+      let model: ThermalModel = {
+        ...stored,
+        gain: stored.gainSamples === 0 ? SEED_GAIN : stored.gain,
+        // A stale thermal.js (see above) knows nothing of the sun term.
+        solar: Number.isFinite(stored.solar) ? stored.solar : 0,
+        solarSamples: Number.isFinite(stored.solarSamples) ? stored.solarSamples : 0,
+      };
       const occupancy = new Occupancy(occCfg, ctx.state.get("occupancy"));
       let comfortUntil = typeof ctx.state.get("comfortUntil") === "number" ? (ctx.state.get("comfortUntil") as number) : null;
       let preheat: { until: number; target: number; startedAt: number } | null = null;
@@ -1669,7 +1675,7 @@ export function createRecipe(): RecipeDefinition {
       }
 
       // Learning stretches.
-      let stretch: { kind: "heat" | "cool"; startAt: number; startTemp: number; outdoorSum: number; n: number; sunny: boolean } | null = null;
+      let stretch: { kind: "heat" | "cool"; startAt: number; startTemp: number; outdoorSum: number; sunSum: number; n: number; blind: boolean } | null = null;
 
       function feedLearning(now: number, temp: number | null, out: Outside, windowOpen: boolean): void {
         const states = heaterIds.map((id) => readRelayState(eqOf(id)));
@@ -1678,19 +1684,27 @@ export function createRecipe(): RecipeDefinition {
           if (!stretch || temp === null) return;
           const s0 = stretch;
           stretch = null;
-          const st = { startAt: s0.startAt, endAt: now, startTemp: s0.startTemp, endTemp: temp, outdoor: s0.outdoorSum / Math.max(1, s0.n) };
+          const n = Math.max(1, s0.n);
+          const st = { startAt: s0.startAt, endAt: now, startTemp: s0.startTemp, endTemp: temp, outdoor: s0.outdoorSum / n, sun: s0.sunSum / n };
           const learned =
-            s0.sunny ? null : s0.kind === "cool" ? learnFromCooling(model, st) : learnFromHeating(model, st);
+            s0.blind ? null : s0.kind === "cool" ? learnFromCooling(model, st) : learnFromHeating(model, st);
           if (!learned) return;
           const before = model;
           model = learned;
           ctx.state.set("model", model);
           // Journal only what moves the needle; the state keeps every step.
           const first = before.gainSamples + before.tauSamples === 0;
-          if (!first && Math.abs(model.gain - before.gain) < 0.2 && Math.abs(model.tau - before.tau) < 1) return;
+          if (
+            !first &&
+            Math.abs(model.gain - before.gain) < 0.2 &&
+            Math.abs(model.tau - before.tau) < 1 &&
+            Math.abs(model.solar - before.solar) < 0.1
+          )
+            return;
           ctx.log(
-            `Apprentissage : la pièce gagne ${round1(model.gain)} °C/h tous radiateurs allumés, inertie ${round1(model.tau)} h ` +
-              `(${model.gainSamples} chauffe(s), ${model.tauSamples} refroidissement(s) observés)`,
+            `Apprentissage : la pièce gagne ${round1(model.gain)} °C/h tous radiateurs allumés, inertie ${round1(model.tau)} h, ` +
+              `soleil +${round1(model.solar)} °C/h à 1000 W/m² ` +
+              `(${model.gainSamples} chauffe(s), ${model.tauSamples} refroidissement(s), ${model.solarSamples} ensoleillement(s) observés)`,
           );
         };
         if (temp === null || kind === null || windowOpen) {
@@ -1700,7 +1714,7 @@ export function createRecipe(): RecipeDefinition {
         }
         if (stretch && stretch.kind !== kind) close();
         if (!stretch) {
-          stretch = { kind, startAt: now, startTemp: temp, outdoorSum: 0, n: 0, sunny: false };
+          stretch = { kind, startAt: now, startTemp: temp, outdoorSum: 0, sunSum: 0, n: 0, blind: false };
           return;
         }
         // Skip the first minutes of a stretch: heaters stay warm after a cut, sensors lag.
@@ -1711,13 +1725,14 @@ export function createRecipe(): RecipeDefinition {
         }
         stretch.outdoorSum += out.outdoorAt(now);
         stretch.n++;
-        // Without an hourly forecast the sun is unknown: treat daytime as sunny rather than learn from it.
-        const daytime = new Date(now).getHours() >= 9 && new Date(now).getHours() < 18;
-        if (out.sunAt(now) > 50 || (out.source !== "forecast" && daytime)) stretch.sunny = true;
+        stretch.sunSum += out.sunAt(now);
+        // Without an hourly forecast the sun is unknown: a daytime stretch teaches nothing reliable.
+        const hour = new Date(now).getHours();
+        if (out.source !== "forecast" && hour >= 9 && hour < 18) stretch.blind = true;
         // Close long stretches so the model keeps learning through a cold night.
         if (now - stretch.startAt >= 3 * 3_600_000 && now - stretch.startAt >= MIN_STRETCH_MS) {
           close();
-          stretch = { kind, startAt: now, startTemp: temp, outdoorSum: 0, n: 0, sunny: false };
+          stretch = { kind, startAt: now, startTemp: temp, outdoorSum: 0, sunSum: 0, n: 0, blind: false };
         }
       }
 
@@ -1797,7 +1812,7 @@ export function createRecipe(): RecipeDefinition {
         if (mode === "auto" && temp !== null && !preheat) {
           const rise = nextRise(now, Math.max(planned, target), stay);
           if (rise) {
-            const reach = timeToReach(model, temp, rise.target, now, out.outdoorAt);
+            const reach = timeToReach(model, temp, rise.target, now, out.outdoorAt, out.sunAt);
             const need = Math.min(reach, MAX_PREHEAT_MS);
             // Shown rounded down to 5 min so the tile text does not change every tick.
             if (need > 0) {
@@ -1836,7 +1851,7 @@ export function createRecipe(): RecipeDefinition {
             drop !== null &&
             (source === "schedule" ? minuteOfDay(now) >= coastFrom : drop - now <= coastMaxMs);
           if (!allowed || temp < target - 1) coasting = false;
-          else if (!coasting && temp >= target - 0.4 && coastTo(model, temp, now, drop!, out.outdoorAt) >= target - 1) {
+          else if (!coasting && temp >= target - 0.4 && coastTo(model, temp, now, drop!, out.outdoorAt, out.sunAt) >= target - 1) {
             coasting = true;
             ctx.log(`Roue libre : l'inertie tient ≥ ${round1(target - 1)} °C jusqu'à ${hm(drop!)}`);
           }
@@ -1977,7 +1992,7 @@ export function createRecipe(): RecipeDefinition {
           `Chauffage intelligent : ${what}, confort ${comfortTemp} °C` +
             (source === "schedule" ? "" : `, nuit ${nightTemp} °C`) +
             `, absence ${frostTemp} °C, ${motionIds.length} détecteur(s) de présence, ` +
-            `modèle ${round1(model.gain)} °C/h · ${round1(model.tau)} h`,
+            `modèle ${round1(model.gain)} °C/h · ${round1(model.tau)} h · soleil ${round1(model.solar)}`,
         );
       }
       ctx.log(

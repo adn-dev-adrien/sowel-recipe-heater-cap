@@ -29,8 +29,6 @@ export interface DaySnapshot {
 export const BLIND_OUTDOOR_C = 5;
 /** Past this, a sensor/series disagreement is a broken source, not a bias. */
 const MAX_BIAS_C = 8;
-/** The live-sensor correction fades to nothing over this horizon. */
-const BIAS_FADE_MS = 3 * 3_600_000;
 /** A series point only describes its own neighbourhood. */
 const MAX_GAP_MS = 90 * 60_000;
 
@@ -114,17 +112,13 @@ export function buildOutside(
 ): Outside {
   const seriesNow = interpolate(hourly, now, (p) => p.temp);
   if (seriesNow !== null) {
-    // A sensor in the sun reads high, and what it reads now says little about
-    // tonight: ignore it under the sun, and let it fade out over BIAS_FADE_MS.
-    const sunNow = interpolate(hourly, now, (p) => p.sun) ?? 0;
-    const raw = live === null || sunNow > 50 ? 0 : live - seriesNow;
+    const raw = live === null ? 0 : live - seriesNow;
     const bias = Math.abs(raw) <= MAX_BIAS_C ? raw : 0;
-    const fade = (t: number): number => (t <= now ? 1 : Math.max(0, 1 - (t - now) / BIAS_FADE_MS));
     return {
       source: "forecast",
       outdoorAt: (t) => {
         const v = interpolate(hourly, t, (p) => p.temp);
-        return v === null ? seriesNow + bias * fade(t) : v + bias * fade(t);
+        return v === null ? seriesNow + bias : v + bias;
       },
       sunAt: (t) => interpolate(hourly, t, (p) => p.sun) ?? 0,
     };
