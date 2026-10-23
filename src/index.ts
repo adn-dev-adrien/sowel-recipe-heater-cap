@@ -1765,7 +1765,10 @@ export function createRecipe(): RecipeDefinition {
           const rise = nextRise(now, Math.max(planned, target), stay);
           if (rise) {
             const need = timeToReach(model, temp, rise.target, now, out.outdoorAt);
-            if (Number.isFinite(need)) preheatDueAt = rise.at - need - PREHEAT_MARGIN_MS;
+            // Shown rounded down to 5 min so the tile text does not change every tick.
+            if (Number.isFinite(need) && need > 0) {
+              preheatDueAt = Math.floor((rise.at - need - PREHEAT_MARGIN_MS) / 300_000) * 300_000;
+            }
             if (now + need + PREHEAT_MARGIN_MS >= rise.at) {
               preheat = { until: rise.at, target: rise.target, startedAt: now };
               lastPreheatStart = now;
