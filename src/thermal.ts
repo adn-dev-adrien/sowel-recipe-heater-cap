@@ -15,6 +15,11 @@
  * Seeds are deliberately pessimistic — a weak heater in a leaky room — so the
  * first pre-heats start early rather than late: arriving to a warm room twenty
  * minutes early costs a little, arriving to a cold one is the failure.
+ *
+ * The gain seed is 1 °C/h: measured at the gîte, one radiator warms a room by
+ * 1.3 °C/h (Chambre Nord, 2026-10-22) and the office pair by 0.8. The earlier
+ * 2.5 was not pessimistic at all — a room that had never been heated under the
+ * recipe started its pre-heat ~1 h 40 late and welcomed guests at 18.7 °C.
  */
 
 export interface ThermalModel {
@@ -26,7 +31,7 @@ export interface ThermalModel {
   tauSamples: number;
 }
 
-export const DEFAULT_MODEL: ThermalModel = { gain: 2.5, tau: 15, gainSamples: 0, tauSamples: 0 };
+export const DEFAULT_MODEL: ThermalModel = { gain: 1, tau: 15, gainSamples: 0, tauSamples: 0 };
 
 const GAIN_RANGE: [number, number] = [0.3, 12];
 const TAU_RANGE: [number, number] = [2, 120];
@@ -47,10 +52,12 @@ export function readModel(value: unknown): ThermalModel {
   const v = value as Record<string, unknown>;
   const num = (x: unknown, fallback: number): number =>
     typeof x === "number" && Number.isFinite(x) ? x : fallback;
+  const gainSamples = Math.max(0, Math.floor(num(v.gainSamples, 0)));
   return {
-    gain: clamp(num(v.gain, DEFAULT_MODEL.gain), GAIN_RANGE),
+    // With no heating observed, the stored gain is only an old seed: take the current one.
+    gain: gainSamples === 0 ? DEFAULT_MODEL.gain : clamp(num(v.gain, DEFAULT_MODEL.gain), GAIN_RANGE),
     tau: clamp(num(v.tau, DEFAULT_MODEL.tau), TAU_RANGE),
-    gainSamples: Math.max(0, Math.floor(num(v.gainSamples, 0))),
+    gainSamples,
     tauSamples: Math.max(0, Math.floor(num(v.tauSamples, 0))),
   };
 }

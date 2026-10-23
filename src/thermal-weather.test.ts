@@ -54,7 +54,23 @@ describe("thermal model", () => {
 
   it("reads a stored model defensively", () => {
     expect(readModel(null)).toEqual(DEFAULT_MODEL);
-    expect(readModel({ gain: 1000, tau: -1 })).toMatchObject({ gain: 12, tau: 2 });
+    expect(readModel({ gain: 1000, tau: -1, gainSamples: 2 })).toMatchObject({ gain: 12, tau: 2 });
+  });
+
+  it("replaces a stored gain that was never learned by the current seed", () => {
+    expect(readModel({ gain: 2.5, tau: 90, gainSamples: 0, tauSamples: 30 })).toMatchObject({
+      gain: DEFAULT_MODEL.gain,
+      tau: 90,
+      tauSamples: 30,
+    });
+    expect(readModel({ gain: 0.78, tau: 44, gainSamples: 41, tauSamples: 50 }).gain).toBe(0.78);
+  });
+
+  it("starts a never-heated room early enough for the measured 1.3 °C/h", () => {
+    // Gîte, 2026-10-22: 16.87 °C, 10 °C outside, 20 °C wanted. At the real gain
+    // the room needs ~2 h 30; the seed must not promise much less than that.
+    const need = timeToReach({ ...DEFAULT_MODEL, tau: 90 }, 16.87, 20, T0, () => 10);
+    expect(need).toBeGreaterThanOrEqual(2.5 * 60 * 60_000);
   });
 });
 
